@@ -40,6 +40,38 @@
     opacity: 0.8;
     max-width: 90vw;
   }
+
+  #controls {
+    margin-top: 16px;
+    text-align: center;
+    font-size: 14px;
+  }
+
+  #micSettings {
+    margin-top: 10px;
+    display: none;
+  }
+
+  #micSettings label {
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  #meter {
+    width: 240px;
+    height: 12px;
+    background: #444;
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 0 auto;
+  }
+
+  #meterFill {
+    height: 100%;
+    width: 0%;
+    background: #888;
+    transition: width 0.05s linear, background-color 0.1s linear;
+  }
 </style>
 </head>
 <body>
@@ -53,7 +85,20 @@
   <div id="instructions">
     Hold <strong>A</strong> / <strong>Left Arrow</strong> &mdash; look left<br>
     Hold <strong>D</strong> / <strong>Right Arrow</strong> &mdash; look right<br>
-    Hold <strong>Space</strong> &mdash; talk
+    Hold <strong>Space</strong> &mdash; talk<br>
+    Mic mode (below) animates the mouth whenever your mic volume is above the threshold &mdash; Space still works too.
+  </div>
+
+  <div id="controls">
+    <label>
+      <input type="checkbox" id="micToggle">
+      Mic mode (mouth only animates while you're making sound)
+    </label>
+    <div id="micSettings">
+      <label for="threshold">Sensitivity threshold</label>
+      <input type="range" id="threshold" min="1" max="100" value="15">
+      <div id="meter"><div id="meterFill"></div></div>
+    </div>
   </div>
 
 <script>
@@ -74,8 +119,19 @@
   ];
 
   let currentDirection = 'front'; // 'front' | 'left' | 'right'
-  let isTalking = false;
-  let talkInterval = null;
+
+  // ---- Talking state ----
+  // The mouth animates whenever spaceHeld is true, OR mic mode is enabled
+  // and the current mic volume is above the threshold. Either source (or
+  // both at once) can drive the animation.
+  let spaceHeld = false;
+  let micEnabled = false;
+  let currentVolume = 0; // roughly 0-100
+  let threshold = 15;
+
+  function shouldAnimateMouth() {
+    return spaceHeld || (micEnabled && currentVolume > threshold);
+  }
 
   function setHead(direction) {
     currentDirection = direction;
@@ -96,7 +152,7 @@
   function updateMouth() {
     if (currentDirection !== 'front') return;
 
-    if (isTalking) {
+    if (shouldAnimateMouth()) {
       const frame = MOUTH_TALK_FRAMES[Math.floor(Math.random() * MOUTH_TALK_FRAMES.length)];
       mouthEl.src = frame;
     } else {
@@ -104,21 +160,10 @@
     }
   }
 
-  function startTalking() {
-    if (isTalking) return;
-    isTalking = true;
-    updateMouth();
-    talkInterval = setInterval(updateMouth, 120);
-  }
-
-  function stopTalking() {
-    isTalking = false;
-    if (talkInterval) {
-      clearInterval(talkInterval);
-      talkInterval = null;
-    }
-    updateMouth();
-  }
+  // Continuously cycle the mouth shape while talking should be animated.
+  // When shouldAnimateMouth() is false this just keeps re-setting the
+  // closed mouth, which is harmless.
+  setInterval(updateMouth, 120);
 
   const pressedKeys = new Set();
   const LEFT_KEYS = ['KeyA', 'ArrowLeft'];
@@ -136,7 +181,8 @@
       setHead('right');
     } else if (e.code === 'Space') {
       e.preventDefault();
-      startTalking();
+      spaceHeld = true;
+      updateMouth();
     }
   });
 
@@ -153,16 +199,107 @@
         setHead('front');
       }
     } else if (e.code === 'Space') {
-      stopTalking();
+      spaceHeld = false;
+      updateMouth();
     }
   });
 
   // safety reset if the window loses focus mid-keypress
   window.addEventListener('blur', () => {
     pressedKeys.clear();
-    stopTalking();
+    spaceHeld = false;
     setHead('front');
   });
+
+  // ---- Mic mode ----
+
+  let audioContext = null;
+  let analyser = null;
+  let micStream = null;
+  let dataArray = null;
+
+  const micToggle = document.getElementById('micToggle');
+  const micSettings = document.getElementById('micSettings');
+  const thresholdSlider = document.getElementById('threshold');
+  const meterFill = document.getElementById('meterFill');
+
+  threshold = Number(thresholdSlider.value);
+
+  thresholdSlider.addEventListener('input', () => {
+    threshold = Number(thresholdSlider.value);
+  });
+
+  micToggle.addEventListener('change', async () => {
+    if (micToggle.checked) {
+      const ok = await enableMic();
+      if (!ok) {
+        micToggle.checked = false;
+        return;
+      }
+      micSettings.style.display = 'block';
+    } else {
+      disableMic();
+      micSettings.style.display = 'none';
+    }
+  });
+
+  async function enableMic() {
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      alert('Could not access the microphone. Check your browser permissions and try again.');
+      return false;
+    }
+
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(micStream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    dataArray = new Uint8Array(analyser.fftSize);
+
+    micEnabled = true;
+    requestAnimationFrame(meterLoop);
+    return true;
+  }
+
+  function disableMic() {
+    micEnabled = false;
+    currentVolume = 0;
+    meterFill.style.width = '0%';
+    updateMouth();
+
+    if (micStream) {
+      micStream.getTracks().forEach(track => track.stop());
+      micStream = null;
+    }
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
+    }
+    analyser = null;
+    dataArray = null;
+  }
+
+  function meterLoop() {
+    if (!micEnabled) return;
+
+    analyser.getByteTimeDomainData(dataArray);
+
+    // root-mean-square of the waveform, scaled to roughly 0-100
+    let sumSquares = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      const sample = (dataArray[i] - 128) / 128;
+      sumSquares += sample * sample;
+    }
+    const rms = Math.sqrt(sumSquares / dataArray.length);
+    currentVolume = Math.min(100, rms * 300);
+
+    meterFill.style.width = currentVolume + '%';
+    meterFill.style.backgroundColor = currentVolume > threshold ? '#4caf50' : '#888';
+
+    requestAnimationFrame(meterLoop);
+  }
 </script>
 
 </body>
