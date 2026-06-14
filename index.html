@@ -33,12 +33,20 @@
     user-select: none;
   }
 
-  #eyes {
-    transition: transform 0.2s ease-in-out;
+  /* Every variant of every animated layer is its own <img>, stacked in
+     place. Only the "shown" one is visible. Nothing ever has its src
+     swapped, which avoids the flicker/glitch that comes from the browser
+     re-decoding an image mid-animation. */
+  .layer {
+    opacity: 0;
   }
 
-  #eyesBlink {
-    opacity: 0;
+  .layer.shown {
+    opacity: 1;
+  }
+
+  .pupils {
+    transition: transform 0.2s ease-in-out;
   }
 
   #instructions {
@@ -90,12 +98,34 @@
 <body>
 
   <div id="stage">
-    <img id="eyeWhites" src="apeyewhites.png" alt="">
+    <!-- Eye whites: lowest layer, static, behind the body -->
+    <img class="layer eyewhites shown" data-dir="front" src="apeyewhites.png" alt="">
+    <img class="layer eyewhites"       data-dir="left"  src="apeyewhitesleft.png" alt="">
+    <img class="layer eyewhites"       data-dir="right" src="apeyewhitesright.png" alt="">
+
     <img id="body" src="apbody.png" alt="">
-    <img id="eyes" src="apeyes.png" alt="">
-    <img id="head" src="apheadfront.png" alt="">
-    <img id="eyesBlink" src="apeyesblink.png" alt="">
-    <img id="mouth" src="apmouth1.png" alt="">
+
+    <!-- Pupils: behind the head, move with glances -->
+    <img class="layer pupils shown" data-dir="front" src="apeyes.png" alt="">
+    <img class="layer pupils"       data-dir="left"  src="apeyesleft.png" alt="">
+    <img class="layer pupils"       data-dir="right" src="apeyesright.png" alt="">
+
+    <!-- Head -->
+    <img class="layer head shown" data-dir="front" src="apheadfront.png" alt="">
+    <img class="layer head"       data-dir="left"  src="apheadleft.png" alt="">
+    <img class="layer head"       data-dir="right" src="apheadright.png" alt="">
+
+    <!-- Blink overlay: on top of the head -->
+    <img class="layer blink" data-dir="front" src="apeyesblink.png" alt="">
+    <img class="layer blink" data-dir="left"  src="apeyesblinkleft.png" alt="">
+    <img class="layer blink" data-dir="right" src="apeyesblinkright.png" alt="">
+
+    <!-- Mouth frames (only shown when facing front) -->
+    <img class="layer mouth shown" data-frame="1" src="apmouth1.png" alt="">
+    <img class="layer mouth"       data-frame="2" src="apmouth2.png" alt="">
+    <img class="layer mouth"       data-frame="3" src="apmouth3.png" alt="">
+    <img class="layer mouth"       data-frame="4" src="apmouth4.png" alt="">
+    <img class="layer mouth"       data-frame="5" src="apmouth5.png" alt="">
   </div>
 
   <div id="instructions">
@@ -123,64 +153,31 @@
   </div>
 
 <script>
-  const headEl = document.getElementById('head');
-  const eyeWhitesEl = document.getElementById('eyeWhites');
-  const eyesEl = document.getElementById('eyes');
-  const eyesBlinkEl = document.getElementById('eyesBlink');
-  const mouthEl = document.getElementById('mouth');
+  // ---- Build layer maps ----
+  // Each map looks like { front: <img>, left: <img>, right: <img> } (or, for
+  // mouth, { '1': <img>, ..., '5': <img> }). setActive() shows exactly one
+  // element from a map (or none) by toggling the 'shown' class - no src
+  // swapping anywhere.
+  function buildLayerMap(className, datasetKey) {
+    const map = {};
+    document.querySelectorAll('.' + className).forEach((el) => {
+      map[el.dataset[datasetKey]] = el;
+    });
+    return map;
+  }
 
-  const HEAD_FRONT = 'apheadfront.png';
-  const HEAD_LEFT = 'apheadleft.png';
-  const HEAD_RIGHT = 'apheadright.png';
+  const eyeWhitesLayers = buildLayerMap('eyewhites', 'dir');
+  const pupilLayers = buildLayerMap('pupils', 'dir');
+  const headLayers = buildLayerMap('head', 'dir');
+  const blinkLayers = buildLayerMap('blink', 'dir');
+  const mouthLayers = buildLayerMap('mouth', 'frame');
 
-  // Eye whites layer: static (no glance movement), sits at the very bottom
-  // of the stack so the body art covers any part of it outside the body
-  // outline. Swaps per head direction along with everything else.
-  const EYE_WHITES = {
-    front: 'apeyewhites.png',
-    left: 'apeyewhitesleft.png',
-    right: 'apeyewhitesright.png'
-  };
-
-  // Open-eyes layer (sits behind the head) and blink layer (sits on top of
-  // the head, since the blink art redraws the eyelids over the face), each
-  // with their own version per head direction.
-  const EYES_STRAIGHT = {
-    front: 'apeyes.png',
-    left: 'apeyesleft.png',
-    right: 'apeyesright.png'
-  };
-  const EYES_BLINK = {
-    front: 'apeyesblink.png',
-    left: 'apeyesblinkleft.png',
-    right: 'apeyesblinkright.png'
-  };
-
-  const MOUTH_CLOSED = 'apmouth1.png';
-  const MOUTH_TALK_FRAMES = [
-    'apmouth1.png',
-    'apmouth2.png',
-    'apmouth3.png',
-    'apmouth4.png',
-    'apmouth5.png'
-  ];
-
-  // Preload every image up front. Without this, the first time a given
-  // direction/blink image is needed the browser has to fetch it, which can
-  // cause a brief blank/"vanish" flash before it appears.
-  const ALL_IMAGE_FILES = new Set([
-    'apbody.png',
-    HEAD_FRONT, HEAD_LEFT, HEAD_RIGHT,
-    EYE_WHITES.front, EYE_WHITES.left, EYE_WHITES.right,
-    EYES_STRAIGHT.front, EYES_STRAIGHT.left, EYES_STRAIGHT.right,
-    EYES_BLINK.front, EYES_BLINK.left, EYES_BLINK.right,
-    MOUTH_CLOSED,
-    ...MOUTH_TALK_FRAMES
-  ]);
-  ALL_IMAGE_FILES.forEach((src) => {
-    const img = new Image();
-    img.src = src;
-  });
+  function setActive(map, key) {
+    const keyStr = key === null ? null : String(key);
+    Object.entries(map).forEach(([k, el]) => {
+      el.classList.toggle('shown', k === keyStr);
+    });
+  }
 
   let currentDirection = 'front'; // 'front' | 'left' | 'right'
   let blinkVisible = false; // true while the blink overlay is currently shown
@@ -216,8 +213,9 @@
 
   function setHead(direction) {
     currentDirection = direction;
-    eyeWhitesEl.src = EYE_WHITES[direction];
-    eyesEl.src = EYES_STRAIGHT[direction];
+    setActive(eyeWhitesLayers, direction);
+    setActive(pupilLayers, direction);
+    setActive(headLayers, direction);
     updateEyeTransform();
 
     // If a blink is currently visible, its art was drawn for whatever
@@ -225,31 +223,28 @@
     // different way, that art no longer matches - cut the blink short
     // rather than showing a mismatched eyelid shape.
     if (blinkVisible) {
-      eyesBlinkEl.style.opacity = '0';
+      setActive(blinkLayers, null);
       blinkVisible = false;
     }
 
-    if (direction === 'left') {
-      headEl.src = HEAD_LEFT;
-      mouthEl.style.display = 'none';
-    } else if (direction === 'right') {
-      headEl.src = HEAD_RIGHT;
-      mouthEl.style.display = 'none';
-    } else {
-      headEl.src = HEAD_FRONT;
-      mouthEl.style.display = 'block';
+    if (direction === 'front') {
       updateMouth();
+    } else {
+      setActive(mouthLayers, null);
     }
   }
 
   function updateMouth() {
-    if (currentDirection !== 'front') return;
+    if (currentDirection !== 'front') {
+      setActive(mouthLayers, null);
+      return;
+    }
 
     if (shouldAnimateMouth()) {
-      const frame = MOUTH_TALK_FRAMES[Math.floor(Math.random() * MOUTH_TALK_FRAMES.length)];
-      mouthEl.src = frame;
+      const frame = 1 + Math.floor(Math.random() * 5); // 1-5
+      setActive(mouthLayers, frame);
     } else {
-      mouthEl.src = MOUTH_CLOSED;
+      setActive(mouthLayers, 1); // closed
     }
   }
 
@@ -301,10 +296,12 @@
   let glanceOffset = { x: 0, y: 0 };
 
   function updateEyeTransform() {
-    const base = EYE_BASE_OFFSET[currentDirection] || EYE_BASE_OFFSET.front;
-    const x = base.x + glanceOffset.x;
-    const y = base.y + glanceOffset.y;
-    eyesEl.style.transform = `translate(${x}%, ${y}%)`;
+    Object.entries(pupilLayers).forEach(([dir, el]) => {
+      const base = EYE_BASE_OFFSET[dir] || { x: 0, y: 0 };
+      const x = base.x + glanceOffset.x;
+      const y = base.y + glanceOffset.y;
+      el.style.transform = `translate(${x}%, ${y}%)`;
+    });
   }
 
   function scheduleNextGlance() {
@@ -326,27 +323,17 @@
   function scheduleNextBlink() {
     const delayBeforeBlink = 2000 + Math.random() * 5000; // 2-7s between blinks
     setTimeout(() => {
-      // Pick the blink art for whatever direction we're facing right now,
-      // and keep using it for the full blink even if the head turns
-      // mid-blink - swapping it while visible looks glitchy. (If the head
-      // does turn mid-blink, setHead() will cut the blink short instead.)
-      eyesBlinkEl.src = EYES_BLINK[currentDirection];
-      eyesBlinkEl.style.opacity = '1';
+      setActive(blinkLayers, currentDirection);
       blinkVisible = true;
 
       setTimeout(() => {
-        eyesBlinkEl.style.opacity = '0';
+        setActive(blinkLayers, null);
         blinkVisible = false;
         scheduleNextBlink();
       }, 150); // blink duration
 
     }, delayBeforeBlink);
   }
-
-  // Set initial images for the front-facing head
-  eyeWhitesEl.src = EYE_WHITES.front;
-  eyesEl.src = EYES_STRAIGHT.front;
-  eyesBlinkEl.src = EYES_BLINK.front;
 
   updateEyeTransform();
   scheduleNextGlance();
