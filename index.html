@@ -55,6 +55,11 @@
     font-size: 14px;
   }
 
+  #controls > label {
+    display: block;
+    margin-bottom: 8px;
+  }
+
   #micSettings {
     margin-top: 10px;
     display: none;
@@ -97,10 +102,15 @@
     Hold <strong>A</strong> / <strong>Left Arrow</strong> &mdash; look left<br>
     Hold <strong>D</strong> / <strong>Right Arrow</strong> &mdash; look right<br>
     Hold <strong>Space</strong> &mdash; talk<br>
-    Mic mode (below) animates the mouth whenever your mic volume is above the threshold &mdash; Space still works too.
+    Mic mode (below) animates the mouth whenever your mic volume is above the threshold &mdash; Space still works too.<br>
+    Autopilot mode (below) looks around when idle and turns to face forward whenever talking is triggered.
   </div>
 
   <div id="controls">
+    <label>
+      <input type="checkbox" id="autopilotToggle">
+      Autopilot mode (looks around when idle, faces forward while talking)
+    </label>
     <label>
       <input type="checkbox" id="micToggle">
       Mic mode (mouth only animates while you're making sound)
@@ -175,6 +185,22 @@
   let currentDirection = 'front'; // 'front' | 'left' | 'right'
   let blinkVisible = false; // true while the blink overlay is currently shown
 
+  // ---- Head direction control ----
+  // manualDirection reflects the A/D / arrow keys and always wins.
+  // autopilotDirection is what autopilot currently wants to show.
+  // The effective direction is manualDirection if set, else autopilot's
+  // choice (if enabled), else 'front'.
+  let manualDirection = null; // 'left' | 'right' | null
+  let autopilotEnabled = false;
+  let autopilotDirection = 'front'; // 'front' | 'left' | 'right'
+
+  function refreshHeadDirection() {
+    const direction = manualDirection || (autopilotEnabled ? autopilotDirection : 'front');
+    if (direction !== currentDirection) {
+      setHead(direction);
+    }
+  }
+
   // ---- Talking state ----
   // The mouth animates whenever spaceHeld is true, OR mic mode is enabled
   // and the current mic volume is above the threshold. Either source (or
@@ -229,8 +255,20 @@
 
   // Continuously cycle the mouth shape while talking should be animated.
   // When shouldAnimateMouth() is false this just keeps re-setting the
-  // closed mouth, which is harmless.
-  setInterval(updateMouth, 120);
+  // closed mouth, which is harmless. This loop also feeds autopilot: any
+  // time talking is active, autopilot is told to face front and the idle
+  // timer is reset.
+  setInterval(() => {
+    updateMouth();
+
+    if (shouldAnimateMouth()) {
+      lastTalkTime = Date.now();
+      if (autopilotDirection !== 'front') {
+        autopilotDirection = 'front';
+        refreshHeadDirection();
+      }
+    }
+  }, 120);
 
   // ---- Eye animation ----
   // Since you now have separate eye art per head direction, these should
@@ -244,7 +282,7 @@
 
   // How far the pupils shift when glancing, in % of the pupil image's own
   // size. This is the main knob to tweak — lower = more subtle.
-  const EYE_GLANCE_DISTANCE = 1.0;
+  const EYE_GLANCE_DISTANCE = 1.2;
 
   // Directions the eyes can glance toward (unit vectors, scaled by
   // EYE_GLANCE_DISTANCE above). No need to touch these unless you want to
@@ -314,6 +352,30 @@
   scheduleNextGlance();
   scheduleNextBlink();
 
+  // ---- Autopilot mode ----
+  // How long (ms) the mouth needs to be idle before autopilot starts
+  // turning the head to look around. This is the "a few seconds" knob.
+  const AUTOPILOT_IDLE_DELAY = 4000;
+
+  let lastTalkTime = Date.now();
+
+  function scheduleNextAutopilotLook() {
+    const delay = 3000 + Math.random() * 4000; // 3-7s between idle look changes
+    setTimeout(() => {
+      const idleLongEnough = (Date.now() - lastTalkTime) > AUTOPILOT_IDLE_DELAY;
+
+      if (autopilotEnabled && manualDirection === null && idleLongEnough) {
+        // Weighted so the head spends more time facing front than turned away.
+        const choices = ['front', 'left', 'right', 'front'];
+        autopilotDirection = choices[Math.floor(Math.random() * choices.length)];
+        refreshHeadDirection();
+      }
+
+      scheduleNextAutopilotLook();
+    }, delay);
+  }
+  scheduleNextAutopilotLook();
+
   const pressedKeys = new Set();
   const LEFT_KEYS = ['KeyA', 'ArrowLeft'];
   const RIGHT_KEYS = ['KeyD', 'ArrowRight'];
@@ -324,10 +386,12 @@
 
     if (LEFT_KEYS.includes(e.code)) {
       e.preventDefault();
-      setHead('left');
+      manualDirection = 'left';
+      refreshHeadDirection();
     } else if (RIGHT_KEYS.includes(e.code)) {
       e.preventDefault();
-      setHead('right');
+      manualDirection = 'right';
+      refreshHeadDirection();
     } else if (e.code === 'Space') {
       e.preventDefault();
       spaceHeld = true;
@@ -339,14 +403,16 @@
     pressedKeys.delete(e.code);
 
     if (LEFT_KEYS.includes(e.code) || RIGHT_KEYS.includes(e.code)) {
-      // if the other direction is still held, switch to it; otherwise go front
+      // if the other direction is still held, switch to it; otherwise
+      // release manual control (autopilot or front takes over)
       if (RIGHT_KEYS.some(k => pressedKeys.has(k))) {
-        setHead('right');
+        manualDirection = 'right';
       } else if (LEFT_KEYS.some(k => pressedKeys.has(k))) {
-        setHead('left');
+        manualDirection = 'left';
       } else {
-        setHead('front');
+        manualDirection = null;
       }
+      refreshHeadDirection();
     } else if (e.code === 'Space') {
       spaceHeld = false;
       updateMouth();
@@ -357,7 +423,16 @@
   window.addEventListener('blur', () => {
     pressedKeys.clear();
     spaceHeld = false;
-    setHead('front');
+    manualDirection = null;
+    refreshHeadDirection();
+  });
+
+  const autopilotToggle = document.getElementById('autopilotToggle');
+  autopilotToggle.addEventListener('change', () => {
+    autopilotEnabled = autopilotToggle.checked;
+    autopilotDirection = 'front';
+    lastTalkTime = Date.now(); // give it a few idle seconds before wandering
+    refreshHeadDirection();
   });
 
   // ---- Mic mode ----
