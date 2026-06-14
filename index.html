@@ -174,7 +174,6 @@
     currentDirection = direction;
     eyeWhitesEl.src = EYE_WHITES[direction];
     eyesEl.src = EYES_STRAIGHT[direction];
-    eyesBlinkEl.src = EYES_BLINK[direction];
     updateEyeTransform();
 
     if (direction === 'left') {
@@ -216,17 +215,22 @@
     right: { x: 0, y: 0 }
   };
 
-  // Small shifts (in % of the eye image's own size) used for "glancing"
-  // off to the side. Tweak these if the movement looks too big/small.
-  const EYE_GLANCE_OFFSETS = [
-    { x: 4, y: 0 },
-    { x: -4, y: 0 },
-    { x: 0, y: -3 },
-    { x: 0, y: 3 },
-    { x: 3, y: -2 },
-    { x: -3, y: -2 },
-    { x: 3, y: 2 },
-    { x: -3, y: 2 }
+  // How far the pupils shift when glancing, in % of the pupil image's own
+  // size. This is the main knob to tweak — lower = more subtle.
+  const EYE_GLANCE_DISTANCE = 1.2;
+
+  // Directions the eyes can glance toward (unit vectors, scaled by
+  // EYE_GLANCE_DISTANCE above). No need to touch these unless you want to
+  // add/remove possible glance directions.
+  const EYE_GLANCE_DIRECTIONS = [
+    { x: 1, y: 0 },
+    { x: -1, y: 0 },
+    { x: 0, y: -1 },
+    { x: 0, y: 1 },
+    { x: 0.7, y: -0.7 },
+    { x: -0.7, y: -0.7 },
+    { x: 0.7, y: 0.7 },
+    { x: -0.7, y: 0.7 }
   ];
 
   let glanceOffset = { x: 0, y: 0 };
@@ -241,7 +245,8 @@
   function scheduleNextGlance() {
     const delayBeforeGlance = 2000 + Math.random() * 4000; // 2-6s of looking straight
     setTimeout(() => {
-      glanceOffset = EYE_GLANCE_OFFSETS[Math.floor(Math.random() * EYE_GLANCE_OFFSETS.length)];
+      const dir = EYE_GLANCE_DIRECTIONS[Math.floor(Math.random() * EYE_GLANCE_DIRECTIONS.length)];
+      glanceOffset = { x: dir.x * EYE_GLANCE_DISTANCE, y: dir.y * EYE_GLANCE_DISTANCE };
       updateEyeTransform();
 
       const glanceDuration = 1000 + Math.random() * 1000; // hold for 1-2s
@@ -256,6 +261,10 @@
   function scheduleNextBlink() {
     const delayBeforeBlink = 2000 + Math.random() * 5000; // 2-7s between blinks
     setTimeout(() => {
+      // Pick the blink art for whatever direction we're facing right now,
+      // and keep using it for the full blink even if the head turns
+      // mid-blink - swapping it while visible looks glitchy.
+      eyesBlinkEl.src = EYES_BLINK[currentDirection];
       eyesBlinkEl.style.opacity = '1';
 
       setTimeout(() => {
