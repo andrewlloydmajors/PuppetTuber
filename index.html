@@ -33,6 +33,14 @@
     user-select: none;
   }
 
+  #eyes {
+    transition: transform 0.2s ease-in-out;
+  }
+
+  #eyesBlink {
+    opacity: 0;
+  }
+
   #instructions {
     margin-top: 20px;
     text-align: center;
@@ -77,8 +85,11 @@
 <body>
 
   <div id="stage">
+    <img id="eyeWhites" src="apeyewhites.png" alt="">
     <img id="body" src="apbody.png" alt="">
+    <img id="eyes" src="apeyes.png" alt="">
     <img id="head" src="apheadfront.png" alt="">
+    <img id="eyesBlink" src="apeyesblink.png" alt="">
     <img id="mouth" src="apmouth1.png" alt="">
   </div>
 
@@ -103,11 +114,37 @@
 
 <script>
   const headEl = document.getElementById('head');
+  const eyeWhitesEl = document.getElementById('eyeWhites');
+  const eyesEl = document.getElementById('eyes');
+  const eyesBlinkEl = document.getElementById('eyesBlink');
   const mouthEl = document.getElementById('mouth');
 
   const HEAD_FRONT = 'apheadfront.png';
   const HEAD_LEFT = 'apheadleft.png';
   const HEAD_RIGHT = 'apheadright.png';
+
+  // Eye whites layer: static (no glance movement), sits at the very bottom
+  // of the stack so the body art covers any part of it outside the body
+  // outline. Swaps per head direction along with everything else.
+  const EYE_WHITES = {
+    front: 'apeyewhites.png',
+    left: 'apeyewhitesleft.png',
+    right: 'apeyewhitesright.png'
+  };
+
+  // Open-eyes layer (sits behind the head) and blink layer (sits on top of
+  // the head, since the blink art redraws the eyelids over the face), each
+  // with their own version per head direction.
+  const EYES_STRAIGHT = {
+    front: 'apeyes.png',
+    left: 'apeyesleft.png',
+    right: 'apeyesright.png'
+  };
+  const EYES_BLINK = {
+    front: 'apeyesblink.png',
+    left: 'apeyesblinkleft.png',
+    right: 'apeyesblinkright.png'
+  };
 
   const MOUTH_CLOSED = 'apmouth1.png';
   const MOUTH_TALK_FRAMES = [
@@ -135,6 +172,10 @@
 
   function setHead(direction) {
     currentDirection = direction;
+    eyeWhitesEl.src = EYE_WHITES[direction];
+    eyesEl.src = EYES_STRAIGHT[direction];
+    eyesBlinkEl.src = EYES_BLINK[direction];
+    updateEyeTransform();
 
     if (direction === 'left') {
       headEl.src = HEAD_LEFT;
@@ -164,6 +205,75 @@
   // When shouldAnimateMouth() is false this just keeps re-setting the
   // closed mouth, which is harmless.
   setInterval(updateMouth, 120);
+
+  // ---- Eye animation ----
+  // Since you now have separate eye art per head direction, these should
+  // normally stay at 0. They're here as a fallback fine-tune knob (in % of
+  // the eye image's own size) in case any direction still looks slightly off.
+  const EYE_BASE_OFFSET = {
+    front: { x: 0, y: 0 },
+    left:  { x: 0, y: 0 },
+    right: { x: 0, y: 0 }
+  };
+
+  // Small shifts (in % of the eye image's own size) used for "glancing"
+  // off to the side. Tweak these if the movement looks too big/small.
+  const EYE_GLANCE_OFFSETS = [
+    { x: 4, y: 0 },
+    { x: -4, y: 0 },
+    { x: 0, y: -3 },
+    { x: 0, y: 3 },
+    { x: 3, y: -2 },
+    { x: -3, y: -2 },
+    { x: 3, y: 2 },
+    { x: -3, y: 2 }
+  ];
+
+  let glanceOffset = { x: 0, y: 0 };
+
+  function updateEyeTransform() {
+    const base = EYE_BASE_OFFSET[currentDirection] || EYE_BASE_OFFSET.front;
+    const x = base.x + glanceOffset.x;
+    const y = base.y + glanceOffset.y;
+    eyesEl.style.transform = `translate(${x}%, ${y}%)`;
+  }
+
+  function scheduleNextGlance() {
+    const delayBeforeGlance = 2000 + Math.random() * 4000; // 2-6s of looking straight
+    setTimeout(() => {
+      glanceOffset = EYE_GLANCE_OFFSETS[Math.floor(Math.random() * EYE_GLANCE_OFFSETS.length)];
+      updateEyeTransform();
+
+      const glanceDuration = 1000 + Math.random() * 1000; // hold for 1-2s
+      setTimeout(() => {
+        glanceOffset = { x: 0, y: 0 };
+        updateEyeTransform();
+        scheduleNextGlance();
+      }, glanceDuration);
+    }, delayBeforeGlance);
+  }
+
+  function scheduleNextBlink() {
+    const delayBeforeBlink = 2000 + Math.random() * 5000; // 2-7s between blinks
+    setTimeout(() => {
+      eyesBlinkEl.style.opacity = '1';
+
+      setTimeout(() => {
+        eyesBlinkEl.style.opacity = '0';
+        scheduleNextBlink();
+      }, 150); // blink duration
+
+    }, delayBeforeBlink);
+  }
+
+  // Set initial images for the front-facing head
+  eyeWhitesEl.src = EYE_WHITES.front;
+  eyesEl.src = EYES_STRAIGHT.front;
+  eyesBlinkEl.src = EYES_BLINK.front;
+
+  updateEyeTransform();
+  scheduleNextGlance();
+  scheduleNextBlink();
 
   const pressedKeys = new Set();
   const LEFT_KEYS = ['KeyA', 'ArrowLeft'];
