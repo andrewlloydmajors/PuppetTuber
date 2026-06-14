@@ -155,7 +155,25 @@
     'apmouth5.png'
   ];
 
+  // Preload every image up front. Without this, the first time a given
+  // direction/blink image is needed the browser has to fetch it, which can
+  // cause a brief blank/"vanish" flash before it appears.
+  const ALL_IMAGE_FILES = new Set([
+    'apbody.png',
+    HEAD_FRONT, HEAD_LEFT, HEAD_RIGHT,
+    EYE_WHITES.front, EYE_WHITES.left, EYE_WHITES.right,
+    EYES_STRAIGHT.front, EYES_STRAIGHT.left, EYES_STRAIGHT.right,
+    EYES_BLINK.front, EYES_BLINK.left, EYES_BLINK.right,
+    MOUTH_CLOSED,
+    ...MOUTH_TALK_FRAMES
+  ]);
+  ALL_IMAGE_FILES.forEach((src) => {
+    const img = new Image();
+    img.src = src;
+  });
+
   let currentDirection = 'front'; // 'front' | 'left' | 'right'
+  let blinkVisible = false; // true while the blink overlay is currently shown
 
   // ---- Talking state ----
   // The mouth animates whenever spaceHeld is true, OR mic mode is enabled
@@ -175,6 +193,15 @@
     eyeWhitesEl.src = EYE_WHITES[direction];
     eyesEl.src = EYES_STRAIGHT[direction];
     updateEyeTransform();
+
+    // If a blink is currently visible, its art was drawn for whatever
+    // direction we were facing when it started. If we've now turned a
+    // different way, that art no longer matches - cut the blink short
+    // rather than showing a mismatched eyelid shape.
+    if (blinkVisible) {
+      eyesBlinkEl.style.opacity = '0';
+      blinkVisible = false;
+    }
 
     if (direction === 'left') {
       headEl.src = HEAD_LEFT;
@@ -263,12 +290,15 @@
     setTimeout(() => {
       // Pick the blink art for whatever direction we're facing right now,
       // and keep using it for the full blink even if the head turns
-      // mid-blink - swapping it while visible looks glitchy.
+      // mid-blink - swapping it while visible looks glitchy. (If the head
+      // does turn mid-blink, setHead() will cut the blink short instead.)
       eyesBlinkEl.src = EYES_BLINK[currentDirection];
       eyesBlinkEl.style.opacity = '1';
+      blinkVisible = true;
 
       setTimeout(() => {
         eyesBlinkEl.style.opacity = '0';
+        blinkVisible = false;
         scheduleNextBlink();
       }, 150); // blink duration
 
