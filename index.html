@@ -114,6 +114,7 @@
     <img class="layer head shown" data-dir="front" src="apheadfront.png" alt="">
     <img class="layer head"       data-dir="left"  src="apheadleft.png" alt="">
     <img class="layer head"       data-dir="right" src="apheadright.png" alt="">
+    <img class="layer head"       data-dir="frontsmile" src="apheadfrontsmile.png" alt="">
 
     <!-- Blink overlay: on top of the head -->
     <img class="layer blink" data-dir="front" src="apeyesblink.png" alt="">
@@ -131,9 +132,10 @@
   <div id="instructions">
     Hold <strong>A</strong> / <strong>Left Arrow</strong> &mdash; look left<br>
     Hold <strong>D</strong> / <strong>Right Arrow</strong> &mdash; look right<br>
+    Hold <strong>S</strong> &mdash; smile (front view only)<br>
     Hold <strong>Space</strong> &mdash; talk<br>
     Mic mode (below) animates the mouth whenever your mic volume is above the threshold &mdash; Space still works too.<br>
-    Autopilot mode (below) looks around when idle and turns to face forward whenever talking is triggered.
+    Autopilot mode (below) looks around when idle, smiles for a couple seconds after talking stops, and turns to face forward whenever talking is triggered.
   </div>
 
   <div id="controls">
@@ -211,11 +213,18 @@
     return spaceHeld || (micEnabled && currentVolume > threshold);
   }
 
+  // ---- Smile expression ----
+  // Smile is an alternate front-facing head ('frontsmile'), independent of
+  // direction. manualSmile follows the S key; autopilotSmile is triggered
+  // automatically (see below). Either one showing it counts, but only while
+  // facing front (there's no smile art for left/right).
+  let manualSmile = false;
+  let autopilotSmile = false;
+
   function setHead(direction) {
     currentDirection = direction;
     setActive(eyeWhitesLayers, direction);
     setActive(pupilLayers, direction);
-    setActive(headLayers, direction);
     updateEyeTransform();
 
     // If a blink is currently visible, its art was drawn for whatever
@@ -227,14 +236,22 @@
       blinkVisible = false;
     }
 
-    if (direction === 'front') {
-      updateMouth();
-    } else {
-      setActive(mouthLayers, null);
-    }
+    updateHeadLayer();
   }
 
-  function updateMouth() {
+  // Picks which head image to show (normal per-direction art, or the
+  // front-facing smile) and which mouth frame (if any) goes with it.
+  function updateHeadLayer() {
+    const showSmile = (manualSmile || autopilotSmile) && currentDirection === 'front';
+
+    if (showSmile) {
+      setActive(headLayers, 'frontsmile');
+      setActive(mouthLayers, null); // smile has its mouth baked in
+      return;
+    }
+
+    setActive(headLayers, currentDirection);
+
     if (currentDirection !== 'front') {
       setActive(mouthLayers, null);
       return;
@@ -248,21 +265,58 @@
     }
   }
 
+  // ---- Post-talk smile (autopilot only) ----
+  // How long after talking stops before the smile appears, and how long it
+  // stays. Both should comfortably fit inside AUTOPILOT_IDLE_DELAY below so
+  // idle wandering doesn't kick in mid-smile.
+  const SMILE_DELAY_AFTER_TALK = 400;
+  const SMILE_DURATION = 2000;
+
+  function scheduleSmileAfterTalk() {
+    setTimeout(() => {
+      const stillQuiet = !shouldAnimateMouth();
+      const stillFreeToSmile = autopilotEnabled && manualDirection === null && currentDirection === 'front' && !manualSmile;
+
+      if (stillQuiet && stillFreeToSmile) {
+        autopilotSmile = true;
+        updateHeadLayer();
+
+        setTimeout(() => {
+          autopilotSmile = false;
+          updateHeadLayer();
+        }, SMILE_DURATION);
+      }
+    }, SMILE_DELAY_AFTER_TALK);
+  }
+
   // Continuously cycle the mouth shape while talking should be animated.
   // When shouldAnimateMouth() is false this just keeps re-setting the
   // closed mouth, which is harmless. This loop also feeds autopilot: any
   // time talking is active, autopilot is told to face front and the idle
-  // timer is reset.
-  setInterval(() => {
-    updateMouth();
+  // timer is reset, and any post-talk smile in progress is cut short. When
+  // talking stops, it kicks off the post-talk smile (autopilot only).
+  let wasTalking = false;
 
-    if (shouldAnimateMouth()) {
+  setInterval(() => {
+    const talkingNow = shouldAnimateMouth();
+
+    if (talkingNow) {
       lastTalkTime = Date.now();
+
       if (autopilotDirection !== 'front') {
         autopilotDirection = 'front';
         refreshHeadDirection();
       }
+
+      if (autopilotSmile) {
+        autopilotSmile = false; // talking interrupts the post-talk smile
+      }
+    } else if (wasTalking && autopilotEnabled) {
+      scheduleSmileAfterTalk();
     }
+
+    wasTalking = talkingNow;
+    updateHeadLayer();
   }, 120);
 
   // ---- Eye animation ----
@@ -285,7 +339,7 @@
   const EYE_GLANCE_DIRECTIONS = [
     { x: 1, y: 0 },
     { x: -1, y: 0 },
-    { x: 0, y: -.5 },
+    { x: 0, y: -1 },
     { x: 0, y: 1 },
     { x: 0.7, y: -0.7 },
     { x: -0.7, y: -0.7 },
@@ -336,6 +390,7 @@
   }
 
   updateEyeTransform();
+  updateHeadLayer();
   scheduleNextGlance();
   scheduleNextBlink();
 
@@ -366,6 +421,7 @@
   const pressedKeys = new Set();
   const LEFT_KEYS = ['KeyA', 'ArrowLeft'];
   const RIGHT_KEYS = ['KeyD', 'ArrowRight'];
+  const SMILE_KEYS = ['KeyS'];
 
   window.addEventListener('keydown', (e) => {
     if (pressedKeys.has(e.code)) return; // ignore OS key-repeat
@@ -379,10 +435,14 @@
       e.preventDefault();
       manualDirection = 'right';
       refreshHeadDirection();
+    } else if (SMILE_KEYS.includes(e.code)) {
+      e.preventDefault();
+      manualSmile = true;
+      updateHeadLayer();
     } else if (e.code === 'Space') {
       e.preventDefault();
       spaceHeld = true;
-      updateMouth();
+      updateHeadLayer();
     }
   });
 
@@ -400,9 +460,12 @@
         manualDirection = null;
       }
       refreshHeadDirection();
+    } else if (SMILE_KEYS.includes(e.code)) {
+      manualSmile = false;
+      updateHeadLayer();
     } else if (e.code === 'Space') {
       spaceHeld = false;
-      updateMouth();
+      updateHeadLayer();
     }
   });
 
@@ -411,15 +474,19 @@
     pressedKeys.clear();
     spaceHeld = false;
     manualDirection = null;
+    manualSmile = false;
     refreshHeadDirection();
+    updateHeadLayer();
   });
 
   const autopilotToggle = document.getElementById('autopilotToggle');
   autopilotToggle.addEventListener('change', () => {
     autopilotEnabled = autopilotToggle.checked;
     autopilotDirection = 'front';
+    autopilotSmile = false;
     lastTalkTime = Date.now(); // give it a few idle seconds before wandering
     refreshHeadDirection();
+    updateHeadLayer();
   });
 
   // ---- Mic mode ----
@@ -478,7 +545,7 @@
     micEnabled = false;
     currentVolume = 0;
     meterFill.style.width = '0%';
-    updateMouth();
+    updateHeadLayer();
 
     if (micStream) {
       micStream.getTracks().forEach(track => track.stop());
