@@ -103,98 +103,92 @@
     animation: headBob 3.8s ease-in-out 0.3s infinite;
   }
 
-  #instructions {
-    margin-top: 20px;
-    text-align: center;
-    font-size: 14px;
-    opacity: 0.8;
-    max-width: 90vw;
+  /* ---- Collapsible settings menu ---- */
+  #menuWrap {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 100;
+    font-family: system-ui, sans-serif;
+    font-size: 13px;
+    color: #eee;
   }
 
-  #controls {
-    margin-top: 16px;
-    text-align: center;
-    font-size: 14px;
-  }
-
-  #controls > label {
+  #menuToggle {
     display: block;
-    margin-bottom: 8px;
+    margin-left: auto;
+    background: rgba(0,0,0,0.55);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: #eee;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    backdrop-filter: blur(4px);
+  }
+
+  #menuToggle:hover { background: rgba(0,0,0,0.75); }
+
+  #settingsPanel {
+    display: none;
+    margin-top: 8px;
+    background: rgba(0,0,0,0.72);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    padding: 14px 18px;
+    width: 240px;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  }
+
+  #settingsPanel.open { display: block; }
+
+  .menuSection {
+    margin-bottom: 14px;
+  }
+
+  .menuSection:last-child { margin-bottom: 0; }
+
+  .menuSectionTitle {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    opacity: 0.5;
+    margin-bottom: 7px;
+  }
+
+  .menuRow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 5px;
+    line-height: 1.4;
+    flex-wrap: wrap;
+  }
+
+  .menuRow:last-child { margin-bottom: 0; }
+
+  kbd {
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 11px;
+    font-family: monospace;
   }
 
   #micSettings {
-    margin-top: 10px;
     display: none;
-  }
-
-  #idleToggles {
-    margin-top: 14px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-  }
-
-  #idleToggles strong {
-    margin-bottom: 2px;
-    opacity: 0.7;
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-
-  #bgControls {
-    margin-top: 14px;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    font-size: 14px;
-  }
-
-  #bgControls label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  #bgImageName {
-    font-size: 12px;
-    opacity: 0.7;
-    max-width: 160px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  #clearBgImage {
-    font-size: 12px;
-    background: none;
-    border: 1px solid #888;
-    color: #ccc;
-    border-radius: 4px;
-    padding: 2px 8px;
-    cursor: pointer;
-    display: none;
-  }
-
-  #clearBgImage:hover {
-    background: #444;
-  }
-
-  #micSettings label {
-    display: block;
-    margin-bottom: 6px;
+    margin-top: 6px;
   }
 
   #meter {
-    width: 240px;
-    height: 12px;
-    background: #444;
-    border-radius: 6px;
+    width: 100%;
+    height: 8px;
+    background: #333;
+    border-radius: 4px;
     overflow: hidden;
-    margin: 0 auto;
+    margin-top: 4px;
   }
 
   #meterFill {
@@ -203,6 +197,29 @@
     background: #888;
     transition: width 0.05s linear, background-color 0.1s linear;
   }
+
+  #bgImageName {
+    font-size: 11px;
+    opacity: 0.6;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 180px;
+  }
+
+  #settingsPanel button {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    color: #eee;
+    border-radius: 4px;
+    padding: 3px 10px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  #settingsPanel button:hover { background: rgba(255,255,255,0.2); }
+
+  input[type="range"] { width: 100%; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -251,7 +268,7 @@
   <div id="menuWrap">
     <button id="menuToggle" title="Show / hide settings">☰ Settings</button>
 
-    <div id="menu">
+    <div id="settingsPanel">
       <div class="menuSection">
         <div class="menuSectionTitle">Controls</div>
         <div class="menuRow"><kbd>A</kbd> / <kbd>D</kbd> — look left / right</div>
@@ -683,6 +700,14 @@
   });
 
   const stageEl = document.getElementById('stage');
+
+  // ---- Settings menu toggle ----
+  const menuToggleBtn = document.getElementById('menuToggle');
+  const menuEl = document.getElementById('settingsPanel');
+  menuToggleBtn.addEventListener('click', () => {
+    menuEl.classList.toggle('open');
+    menuToggleBtn.textContent = menuEl.classList.contains('open') ? '✕ Close' : '☰ Settings';
+  });
 
   document.getElementById('toggleBreathing').addEventListener('change', (e) => {
     stageEl.classList.toggle('bobbing', e.target.checked);
