@@ -12,7 +12,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    background: #2b2b2b;
+    background: #111;
     font-family: system-ui, sans-serif;
     color: #eee;
   }
@@ -28,13 +28,27 @@
     background-repeat: no-repeat;
   }
 
+  /* Background layer sits inside the stage, behind all puppet layers.
+     This means the background only shows through the transparent parts of
+     the puppet PNGs — i.e. the actual black areas of the canvas. */
+  #stageBg {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background-color: #2b2b2b;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+
   #stage {
     position: relative;
     width: min(90vw, 600px);
     aspect-ratio: 1 / 1;
+    overflow: hidden;
   }
 
-  #stage img {
+  #stage img, #body-wrap, #head-wrap {
     position: absolute;
     top: 0;
     left: 0;
@@ -42,6 +56,11 @@
     height: 100%;
     pointer-events: none;
     user-select: none;
+  }
+
+  #body-wrap, #head-wrap {
+    /* wrappers aren't images so need these explicitly */
+    pointer-events: none;
   }
 
   /* Every variant of every animated layer is its own <img>, stacked in
@@ -60,14 +79,26 @@
     transition: transform 0.2s ease-in-out;
   }
 
-  @keyframes idleBob {
+  @keyframes bodyBob {
     0%   { transform: translateY(0px); }
-    50%  { transform: translateY(-6px); }
+    50%  { transform: translateY(-7px); }
     100% { transform: translateY(0px); }
   }
 
-  #stage.bobbing {
-    animation: idleBob 3.2s ease-in-out infinite;
+  @keyframes headBob {
+    0%   { transform: translateY(0px); }
+    50%  { transform: translateY(-3px); }
+    100% { transform: translateY(0px); }
+  }
+
+  #stage.bobbing #body-wrap {
+    animation: bodyBob 3.2s ease-in-out infinite;
+  }
+
+  /* Head follows with less movement and a small delay so it lags behind
+     slightly, like the head is resting on a neck that has a little give. */
+  #stage.bobbing #head-wrap {
+    animation: headBob 3.2s ease-in-out 0.18s infinite;
   }
 
   #instructions {
@@ -158,38 +189,45 @@
 </head>
 <body>
 
-  <div id="bg"></div>
-
   <div id="stage">
-    <!-- Eye whites: lowest layer, static, behind the body -->
-    <img class="layer eyewhites shown" data-dir="front" src="apeyewhites.png" alt="">
-    <img class="layer eyewhites"       data-dir="left"  src="apeyewhitesleft.png" alt="">
-    <img class="layer eyewhites"       data-dir="right" src="apeyewhitesright.png" alt="">
+    <!-- Background: sits inside the stage so it only fills the puppet canvas -->
+    <div id="stageBg"></div>
 
-    <img id="body" src="apbody.png" alt="">
+    <!-- Body wrap: bobs with full amplitude -->
+    <div id="body-wrap">
+      <!-- Eye whites: lowest layer, static, behind the body -->
+      <img class="layer eyewhites shown" data-dir="front" src="apeyewhites.png" alt="">
+      <img class="layer eyewhites"       data-dir="left"  src="apeyewhitesleft.png" alt="">
+      <img class="layer eyewhites"       data-dir="right" src="apeyewhitesright.png" alt="">
 
-    <!-- Pupils: behind the head, move with glances -->
-    <img class="layer pupils shown" data-dir="front" src="apeyes.png" alt="">
-    <img class="layer pupils"       data-dir="left"  src="apeyesleft.png" alt="">
-    <img class="layer pupils"       data-dir="right" src="apeyesright.png" alt="">
+      <img id="body" src="apbody.png" alt="">
+    </div>
 
-    <!-- Head -->
-    <img class="layer head shown" data-dir="front" src="apheadfront.png" alt="">
-    <img class="layer head"       data-dir="left"  src="apheadleft.png" alt="">
-    <img class="layer head"       data-dir="right" src="apheadright.png" alt="">
-    <img class="layer head"       data-dir="frontsmile" src="apheadfrontsmile.png" alt="">
+    <!-- Head wrap: bobs with less amplitude and a slight delay -->
+    <div id="head-wrap">
+      <!-- Pupils: behind the head, move with glances -->
+      <img class="layer pupils shown" data-dir="front" src="apeyes.png" alt="">
+      <img class="layer pupils"       data-dir="left"  src="apeyesleft.png" alt="">
+      <img class="layer pupils"       data-dir="right" src="apeyesright.png" alt="">
 
-    <!-- Blink overlay: on top of the head -->
-    <img class="layer blink" data-dir="front" src="apeyesblink.png" alt="">
-    <img class="layer blink" data-dir="left"  src="apeyesblinkleft.png" alt="">
-    <img class="layer blink" data-dir="right" src="apeyesblinkright.png" alt="">
+      <!-- Head -->
+      <img class="layer head shown" data-dir="front" src="apheadfront.png" alt="">
+      <img class="layer head"       data-dir="left"  src="apheadleft.png" alt="">
+      <img class="layer head"       data-dir="right" src="apheadright.png" alt="">
+      <img class="layer head"       data-dir="frontsmile" src="apheadfrontsmile.png" alt="">
 
-    <!-- Mouth frames (only shown when facing front) -->
-    <img class="layer mouth shown" data-frame="1" src="apmouth1.png" alt="">
-    <img class="layer mouth"       data-frame="2" src="apmouth2.png" alt="">
-    <img class="layer mouth"       data-frame="3" src="apmouth3.png" alt="">
-    <img class="layer mouth"       data-frame="4" src="apmouth4.png" alt="">
-    <img class="layer mouth"       data-frame="5" src="apmouth5.png" alt="">
+      <!-- Blink overlay: on top of the head -->
+      <img class="layer blink" data-dir="front" src="apeyesblink.png" alt="">
+      <img class="layer blink" data-dir="left"  src="apeyesblinkleft.png" alt="">
+      <img class="layer blink" data-dir="right" src="apeyesblinkright.png" alt="">
+
+      <!-- Mouth frames (only shown when facing front) -->
+      <img class="layer mouth shown" data-frame="1" src="apmouth1.png" alt="">
+      <img class="layer mouth"       data-frame="2" src="apmouth2.png" alt="">
+      <img class="layer mouth"       data-frame="3" src="apmouth3.png" alt="">
+      <img class="layer mouth"       data-frame="4" src="apmouth4.png" alt="">
+      <img class="layer mouth"       data-frame="5" src="apmouth5.png" alt="">
+    </div>
   </div>
 
   <div id="instructions">
@@ -660,7 +698,7 @@
   }
 
   // ---- Background color & image ----
-  const bgEl = document.getElementById('bg');
+  const bgEl = document.getElementById('stageBg');
   const bgColorPicker = document.getElementById('bgColorPicker');
   const bgImagePicker = document.getElementById('bgImagePicker');
   const bgImageName = document.getElementById('bgImageName');
