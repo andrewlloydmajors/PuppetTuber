@@ -248,58 +248,65 @@
     </div>
   </div>
 
-  <div id="instructions">
-    Hold <strong>A</strong> / <strong>Left Arrow</strong> &mdash; look left<br>
-    Hold <strong>D</strong> / <strong>Right Arrow</strong> &mdash; look right<br>
-    Hold <strong>S</strong> &mdash; smile (front view only)<br>
-    Hold <strong>Space</strong> &mdash; talk<br>
-    Mic mode (below) animates the mouth whenever your mic volume is above the threshold &mdash; Space still works too.<br>
-    Use the idle toggles below to independently enable breathing, head movement, eye movement, and smile-after-talking.
-  </div>
+  <div id="menuWrap">
+    <button id="menuToggle" title="Show / hide settings">☰ Settings</button>
 
-  <div id="controls">
-    <label>
-      <input type="checkbox" id="micToggle">
-      Mic mode (mouth only animates while you're making sound)
-    </label>
-    <div id="micSettings">
-      <label for="threshold">Sensitivity threshold</label>
-      <input type="range" id="threshold" min="1" max="100" value="15">
-      <div id="meter"><div id="meterFill"></div></div>
-    </div>
-    <div id="idleToggles">
-      <strong>Idle animations</strong>
-      <label>
-        <input type="checkbox" id="toggleBreathing">
-        Breathing
-      </label>
-      <label>
-        <input type="checkbox" id="toggleHeadMovement">
-        Head movement (turns to look around when idle)
-      </label>
-      <label>
-        <input type="checkbox" id="toggleEyeMovement">
-        Eye movement (glances around)
-      </label>
-      <label>
-        <input type="checkbox" id="toggleSmileAfterTalk">
-        Smile after talking
-      </label>
-    </div>
-  </div>
+    <div id="menu">
+      <div class="menuSection">
+        <div class="menuSectionTitle">Controls</div>
+        <div class="menuRow"><kbd>A</kbd> / <kbd>D</kbd> — look left / right</div>
+        <div class="menuRow"><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> — move eyes (diagonals work too)</div>
+        <div class="menuRow"><kbd>1</kbd> — smile (front view only)</div>
+        <div class="menuRow"><kbd>Space</kbd> — talk</div>
+      </div>
 
-  <div id="bgControls">
-    <label>
-      Background color
-      <input type="color" id="bgColorPicker" value="#2b2b2b">
-    </label>
-    <label>
-      Background image
-      <input type="file" id="bgImagePicker" accept="image/*" style="display:none">
-      <button id="bgImageBtn" onclick="document.getElementById('bgImagePicker').click()">Choose image</button>
-    </label>
-    <span id="bgImageName"></span>
-    <button id="clearBgImage">✕ Remove image</button>
+      <div class="menuSection">
+        <div class="menuSectionTitle">Mic</div>
+        <label class="menuRow">
+          <input type="checkbox" id="micToggle">
+          Mic mode
+        </label>
+        <div id="micSettings">
+          <label class="menuRow" for="threshold">Sensitivity</label>
+          <input type="range" id="threshold" min="1" max="100" value="15">
+          <div id="meter"><div id="meterFill"></div></div>
+        </div>
+      </div>
+
+      <div class="menuSection">
+        <div class="menuSectionTitle">Idle animations</div>
+        <label class="menuRow">
+          <input type="checkbox" id="toggleBreathing">
+          Breathing
+        </label>
+        <label class="menuRow">
+          <input type="checkbox" id="toggleHeadMovement">
+          Head movement
+        </label>
+        <label class="menuRow">
+          <input type="checkbox" id="toggleEyeMovement">
+          Eye movement
+        </label>
+        <label class="menuRow">
+          <input type="checkbox" id="toggleSmileAfterTalk">
+          Smile after talking
+        </label>
+      </div>
+
+      <div class="menuSection">
+        <div class="menuSectionTitle">Background</div>
+        <label class="menuRow">
+          Color
+          <input type="color" id="bgColorPicker" value="#2b2b2b">
+        </label>
+        <div class="menuRow">
+          <input type="file" id="bgImagePicker" accept="image/*" style="display:none">
+          <button id="bgImageBtn" onclick="document.getElementById('bgImagePicker').click()">Choose image</button>
+          <button id="clearBgImage" style="display:none">✕ Remove</button>
+        </div>
+        <div class="menuRow"><span id="bgImageName"></span></div>
+      </div>
+    </div>
   </div>
 
 <script>
@@ -418,7 +425,7 @@
   // How long after talking stops before the smile appears, and how long it
   // stays. Both should comfortably fit inside AUTOPILOT_IDLE_DELAY below so
   // idle wandering doesn't kick in mid-smile.
-  const SMILE_DELAY_AFTER_TALK = 1500;
+  const SMILE_DELAY_AFTER_TALK = 400;
   const SMILE_DURATION = 2000;
 
   function scheduleSmileAfterTalk() {
@@ -572,9 +579,44 @@
   scheduleNextAutopilotLook();
 
   const pressedKeys = new Set();
-  const LEFT_KEYS = ['KeyA', 'ArrowLeft'];
-  const RIGHT_KEYS = ['KeyD', 'ArrowRight'];
-  const SMILE_KEYS = ['KeyS'];
+  const LEFT_KEYS = ['KeyA'];
+  const RIGHT_KEYS = ['KeyD'];
+  const SMILE_KEYS = ['Digit1'];
+
+  // Manual eye glance: arrow keys, including diagonals from held combos.
+  // When any arrow key is held, we compute the offset from which arrows are
+  // currently down and apply it directly, overriding the idle glance.
+  // On release (when no arrow keys remain), we restore the idle glance offset
+  // (or zero if idle eye movement is off).
+  let manualEyeActive = false;
+  const ARROW_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
+
+  function computeManualEyeOffset() {
+    const left  = pressedKeys.has('ArrowLeft');
+    const right = pressedKeys.has('ArrowRight');
+    const up    = pressedKeys.has('ArrowUp');
+    const down  = pressedKeys.has('ArrowDown');
+    const x = (right ? 1 : 0) - (left ? 1 : 0);
+    const y = (down  ? 1 : 0) - (up   ? 1 : 0);
+    // Normalise diagonals so they travel the same distance as cardinals
+    const len = Math.sqrt(x * x + y * y) || 1;
+    return { x: (x / len) * EYE_GLANCE_DISTANCE, y: (y / len) * EYE_GLANCE_DISTANCE };
+  }
+
+  function applyManualEye() {
+    const anyArrow = ARROW_KEYS.some(k => pressedKeys.has(k));
+    if (anyArrow) {
+      manualEyeActive = true;
+      glanceOffset = computeManualEyeOffset();
+      updateEyeTransform();
+    } else if (manualEyeActive) {
+      manualEyeActive = false;
+      // Snap back to idle glance (zero if idle eye movement is off, the
+      // scheduler will take over from here on its own timer).
+      glanceOffset = { x: 0, y: 0 };
+      updateEyeTransform();
+    }
+  }
 
   window.addEventListener('keydown', (e) => {
     if (pressedKeys.has(e.code)) return; // ignore OS key-repeat
@@ -588,6 +630,9 @@
       e.preventDefault();
       manualDirection = 'right';
       refreshHeadDirection();
+    } else if (ARROW_KEYS.includes(e.code)) {
+      e.preventDefault();
+      applyManualEye();
     } else if (SMILE_KEYS.includes(e.code)) {
       e.preventDefault();
       manualSmile = true;
@@ -613,6 +658,8 @@
         manualDirection = null;
       }
       refreshHeadDirection();
+    } else if (ARROW_KEYS.includes(e.code)) {
+      applyManualEye();
     } else if (SMILE_KEYS.includes(e.code)) {
       manualSmile = false;
       updateHeadLayer();
@@ -628,6 +675,9 @@
     spaceHeld = false;
     manualDirection = null;
     manualSmile = false;
+    manualEyeActive = false;
+    glanceOffset = { x: 0, y: 0 };
+    updateEyeTransform();
     refreshHeadDirection();
     updateHeadLayer();
   });
