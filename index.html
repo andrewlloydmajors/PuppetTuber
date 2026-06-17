@@ -17,6 +17,17 @@
     color: #eee;
   }
 
+  /* Full-page background layer, sits behind everything */
+  #bg {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background-color: #2b2b2b;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+
   #stage {
     position: relative;
     width: min(90vw, 600px);
@@ -49,6 +60,16 @@
     transition: transform 0.2s ease-in-out;
   }
 
+  @keyframes idleBob {
+    0%   { transform: translateY(0px); }
+    50%  { transform: translateY(-6px); }
+    100% { transform: translateY(0px); }
+  }
+
+  #stage.bobbing {
+    animation: idleBob 3.2s ease-in-out infinite;
+  }
+
   #instructions {
     margin-top: 20px;
     text-align: center;
@@ -71,6 +92,46 @@
   #micSettings {
     margin-top: 10px;
     display: none;
+  }
+
+  #bgControls {
+    margin-top: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    font-size: 14px;
+  }
+
+  #bgControls label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  #bgImageName {
+    font-size: 12px;
+    opacity: 0.7;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #clearBgImage {
+    font-size: 12px;
+    background: none;
+    border: 1px solid #888;
+    color: #ccc;
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+    display: none;
+  }
+
+  #clearBgImage:hover {
+    background: #444;
   }
 
   #micSettings label {
@@ -96,6 +157,8 @@
 </style>
 </head>
 <body>
+
+  <div id="bg"></div>
 
   <div id="stage">
     <!-- Eye whites: lowest layer, static, behind the body -->
@@ -152,6 +215,20 @@
       <input type="range" id="threshold" min="1" max="100" value="15">
       <div id="meter"><div id="meterFill"></div></div>
     </div>
+  </div>
+
+  <div id="bgControls">
+    <label>
+      Background color
+      <input type="color" id="bgColorPicker" value="#2b2b2b">
+    </label>
+    <label>
+      Background image
+      <input type="file" id="bgImagePicker" accept="image/*" style="display:none">
+      <button id="bgImageBtn" onclick="document.getElementById('bgImagePicker').click()">Choose image</button>
+    </label>
+    <span id="bgImageName"></span>
+    <button id="clearBgImage">✕ Remove image</button>
   </div>
 
 <script>
@@ -269,8 +346,8 @@
   // How long after talking stops before the smile appears, and how long it
   // stays. Both should comfortably fit inside AUTOPILOT_IDLE_DELAY below so
   // idle wandering doesn't kick in mid-smile.
-  const SMILE_DELAY_AFTER_TALK = 1000;
-  const SMILE_DURATION = 3500;
+  const SMILE_DELAY_AFTER_TALK = 400;
+  const SMILE_DURATION = 2000;
 
   function scheduleSmileAfterTalk() {
     setTimeout(() => {
@@ -479,12 +556,15 @@
     updateHeadLayer();
   });
 
+  const stageEl = document.getElementById('stage');
+
   const autopilotToggle = document.getElementById('autopilotToggle');
   autopilotToggle.addEventListener('change', () => {
     autopilotEnabled = autopilotToggle.checked;
     autopilotDirection = 'front';
     autopilotSmile = false;
-    lastTalkTime = Date.now(); // give it a few idle seconds before wandering
+    lastTalkTime = Date.now();
+    stageEl.classList.toggle('bobbing', autopilotEnabled);
     refreshHeadDirection();
     updateHeadLayer();
   });
@@ -578,6 +658,47 @@
 
     requestAnimationFrame(meterLoop);
   }
+
+  // ---- Background color & image ----
+  const bgEl = document.getElementById('bg');
+  const bgColorPicker = document.getElementById('bgColorPicker');
+  const bgImagePicker = document.getElementById('bgImagePicker');
+  const bgImageName = document.getElementById('bgImageName');
+  const clearBgImage = document.getElementById('clearBgImage');
+
+  let bgImageURL = null;
+
+  function applyBackground() {
+    bgEl.style.backgroundColor = bgColorPicker.value;
+    if (bgImageURL) {
+      bgEl.style.backgroundImage = `url(${bgImageURL})`;
+    } else {
+      bgEl.style.backgroundImage = 'none';
+    }
+  }
+
+  bgColorPicker.addEventListener('input', applyBackground);
+
+  bgImagePicker.addEventListener('change', () => {
+    const file = bgImagePicker.files[0];
+    if (!file) return;
+
+    if (bgImageURL) URL.revokeObjectURL(bgImageURL);
+    bgImageURL = URL.createObjectURL(file);
+
+    bgImageName.textContent = file.name;
+    clearBgImage.style.display = 'inline-block';
+    applyBackground();
+  });
+
+  clearBgImage.addEventListener('click', () => {
+    if (bgImageURL) URL.revokeObjectURL(bgImageURL);
+    bgImageURL = null;
+    bgImagePicker.value = '';
+    bgImageName.textContent = '';
+    clearBgImage.style.display = 'none';
+    applyBackground();
+  });
 </script>
 
 </body>
