@@ -127,6 +127,22 @@
     display: none;
   }
 
+  #idleToggles {
+    margin-top: 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+
+  #idleToggles strong {
+    margin-bottom: 2px;
+    opacity: 0.7;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
   #bgControls {
     margin-top: 14px;
     display: flex;
@@ -238,14 +254,10 @@
     Hold <strong>S</strong> &mdash; smile (front view only)<br>
     Hold <strong>Space</strong> &mdash; talk<br>
     Mic mode (below) animates the mouth whenever your mic volume is above the threshold &mdash; Space still works too.<br>
-    Autopilot mode (below) looks around when idle, smiles for a couple seconds after talking stops, and turns to face forward whenever talking is triggered.
+    Use the idle toggles below to independently enable breathing, head movement, eye movement, and smile-after-talking.
   </div>
 
   <div id="controls">
-    <label>
-      <input type="checkbox" id="autopilotToggle">
-      Autopilot mode (looks around when idle, faces forward while talking)
-    </label>
     <label>
       <input type="checkbox" id="micToggle">
       Mic mode (mouth only animates while you're making sound)
@@ -254,6 +266,25 @@
       <label for="threshold">Sensitivity threshold</label>
       <input type="range" id="threshold" min="1" max="100" value="15">
       <div id="meter"><div id="meterFill"></div></div>
+    </div>
+    <div id="idleToggles">
+      <strong>Idle animations</strong>
+      <label>
+        <input type="checkbox" id="toggleBreathing">
+        Breathing
+      </label>
+      <label>
+        <input type="checkbox" id="toggleHeadMovement">
+        Head movement (turns to look around when idle)
+      </label>
+      <label>
+        <input type="checkbox" id="toggleEyeMovement">
+        Eye movement (glances around)
+      </label>
+      <label>
+        <input type="checkbox" id="toggleSmileAfterTalk">
+        Smile after talking
+      </label>
     </div>
   </div>
 
@@ -307,11 +338,12 @@
   // The effective direction is manualDirection if set, else autopilot's
   // choice (if enabled), else 'front'.
   let manualDirection = null; // 'left' | 'right' | null
-  let autopilotEnabled = false;
+  let idleHeadEnabled = false;
+  let idleSmileEnabled = false;
   let autopilotDirection = 'front'; // 'front' | 'left' | 'right'
 
   function refreshHeadDirection() {
-    const direction = manualDirection || (autopilotEnabled ? autopilotDirection : 'front');
+    const direction = manualDirection || (idleHeadEnabled ? autopilotDirection : 'front');
     if (direction !== currentDirection) {
       setHead(direction);
     }
@@ -392,7 +424,7 @@
   function scheduleSmileAfterTalk() {
     setTimeout(() => {
       const stillQuiet = !shouldAnimateMouth();
-      const stillFreeToSmile = autopilotEnabled && manualDirection === null && currentDirection === 'front' && !manualSmile;
+      const stillFreeToSmile = idleSmileEnabled && manualDirection === null && currentDirection === 'front' && !manualSmile;
 
       if (stillQuiet && stillFreeToSmile) {
         autopilotSmile = true;
@@ -426,9 +458,9 @@
       }
 
       if (autopilotSmile) {
-        autopilotSmile = false; // talking interrupts the post-talk smile
+        autopilotSmile = false;
       }
-    } else if (wasTalking && autopilotEnabled) {
+    } else if (wasTalking && idleSmileEnabled) {
       scheduleSmileAfterTalk();
     }
 
@@ -466,6 +498,8 @@
 
   let glanceOffset = { x: 0, y: 0 };
 
+  let idleEyeEnabled = false;
+
   function updateEyeTransform() {
     Object.entries(pupilLayers).forEach(([dir, el]) => {
       const base = EYE_BASE_OFFSET[dir] || { x: 0, y: 0 };
@@ -478,9 +512,11 @@
   function scheduleNextGlance() {
     const delayBeforeGlance = 2000 + Math.random() * 4000; // 2-6s of looking straight
     setTimeout(() => {
-      const dir = EYE_GLANCE_DIRECTIONS[Math.floor(Math.random() * EYE_GLANCE_DIRECTIONS.length)];
-      glanceOffset = { x: dir.x * EYE_GLANCE_DISTANCE, y: dir.y * EYE_GLANCE_DISTANCE };
-      updateEyeTransform();
+      if (idleEyeEnabled) {
+        const dir = EYE_GLANCE_DIRECTIONS[Math.floor(Math.random() * EYE_GLANCE_DIRECTIONS.length)];
+        glanceOffset = { x: dir.x * EYE_GLANCE_DISTANCE, y: dir.y * EYE_GLANCE_DISTANCE };
+        updateEyeTransform();
+      }
 
       const glanceDuration = 1000 + Math.random() * 1000; // hold for 1-2s
       setTimeout(() => {
@@ -523,7 +559,7 @@
     setTimeout(() => {
       const idleLongEnough = (Date.now() - lastTalkTime) > AUTOPILOT_IDLE_DELAY;
 
-      if (autopilotEnabled && manualDirection === null && idleLongEnough) {
+      if (idleHeadEnabled && manualDirection === null && idleLongEnough) {
         // Weighted so the head spends more time facing front than turned away.
         const choices = ['front', 'left', 'right', 'front'];
         autopilotDirection = choices[Math.floor(Math.random() * choices.length)];
@@ -598,15 +634,36 @@
 
   const stageEl = document.getElementById('stage');
 
-  const autopilotToggle = document.getElementById('autopilotToggle');
-  autopilotToggle.addEventListener('change', () => {
-    autopilotEnabled = autopilotToggle.checked;
-    autopilotDirection = 'front';
-    autopilotSmile = false;
-    lastTalkTime = Date.now();
-    stageEl.classList.toggle('bobbing', autopilotEnabled);
-    refreshHeadDirection();
-    updateHeadLayer();
+  document.getElementById('toggleBreathing').addEventListener('change', (e) => {
+    stageEl.classList.toggle('bobbing', e.target.checked);
+  });
+
+  document.getElementById('toggleHeadMovement').addEventListener('change', (e) => {
+    idleHeadEnabled = e.target.checked;
+    if (!idleHeadEnabled) {
+      autopilotDirection = 'front';
+      autopilotSmile = false;
+      refreshHeadDirection();
+      updateHeadLayer();
+    } else {
+      lastTalkTime = Date.now(); // reset idle clock so it waits before wandering
+    }
+  });
+
+  document.getElementById('toggleEyeMovement').addEventListener('change', (e) => {
+    idleEyeEnabled = e.target.checked;
+    if (!idleEyeEnabled) {
+      glanceOffset = { x: 0, y: 0 };
+      updateEyeTransform();
+    }
+  });
+
+  document.getElementById('toggleSmileAfterTalk').addEventListener('change', (e) => {
+    idleSmileEnabled = e.target.checked;
+    if (!idleSmileEnabled) {
+      autopilotSmile = false;
+      updateHeadLayer();
+    }
   });
 
   // ---- Mic mode ----
