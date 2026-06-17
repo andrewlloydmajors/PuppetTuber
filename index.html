@@ -81,24 +81,26 @@
 
   @keyframes bodyBob {
     0%   { transform: translateY(0px); }
-    50%  { transform: translateY(-7px); }
+    40%  { transform: translateY(-8px); }
+    60%  { transform: translateY(-8px); }
     100% { transform: translateY(0px); }
   }
 
   @keyframes headBob {
     0%   { transform: translateY(0px); }
-    50%  { transform: translateY(-3px); }
+    40%  { transform: translateY(-6px); }
+    60%  { transform: translateY(-6px); }
     100% { transform: translateY(0px); }
   }
 
   #stage.bobbing #body-wrap {
-    animation: bodyBob 3.2s ease-in-out infinite;
+    animation: bodyBob 3.8s ease-in-out infinite;
   }
 
-  /* Head follows with less movement and a small delay so it lags behind
-     slightly, like the head is resting on a neck that has a little give. */
+  /* Head follows the body's rise with a brief delay — stomach fills,
+     then the chest expands and lifts the head slightly behind it. */
   #stage.bobbing #head-wrap {
-    animation: headBob 3.2s ease-in-out 0.18s infinite;
+    animation: headBob 3.8s ease-in-out 0.3s infinite;
   }
 
   #instructions {
@@ -708,6 +710,7 @@
 
   function applyBackground() {
     bgEl.style.backgroundColor = bgColorPicker.value;
+    document.body.style.backgroundColor = bgColorPicker.value;
     if (bgImageURL) {
       bgEl.style.backgroundImage = `url(${bgImageURL})`;
     } else {
