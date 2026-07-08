@@ -63,7 +63,7 @@ window.dispatchEvent(new Event('mpReady'));
     overflow: hidden;
   }
 
-  #stage img, #body-wrap, #head-wrap {
+  #stage img, #body-wrap, #tilt-wrap, #head-wrap {
     position: absolute;
     top: 0;
     left: 0;
@@ -73,9 +73,9 @@ window.dispatchEvent(new Event('mpReady'));
     user-select: none;
   }
 
-  #body-wrap, #head-wrap {
-    /* wrappers aren't images so need these explicitly */
+  #body-wrap, #tilt-wrap, #head-wrap {
     pointer-events: none;
+    transition: transform 0.1s ease-out;
   }
 
   /* Every variant of every animated layer is its own <img>, stacked in
@@ -112,8 +112,7 @@ window.dispatchEvent(new Event('mpReady'));
     animation: bodyBob 3.8s ease-in-out infinite;
   }
 
-  /* Head follows the body's rise with a brief delay — stomach fills,
-     then the chest expands and lifts the head slightly behind it. */
+  /* tilt-wrap handles rotation; head-wrap inside it handles the bob */
   #stage.bobbing #head-wrap {
     animation: headBob 3.8s ease-in-out 0.3s infinite;
   }
@@ -293,8 +292,10 @@ window.dispatchEvent(new Event('mpReady'));
       <img id="body" src="apbody.png" alt="">
     </div>
 
-    <!-- Head wrap: bobs with less amplitude and a slight delay -->
-    <div id="head-wrap">
+    <!-- Tilt wrap: rotated by webcam roll, separate from bob animation -->
+    <div id="tilt-wrap">
+      <!-- Head wrap: bobs with less amplitude and a slight delay -->
+      <div id="head-wrap">
       <!-- Pupils: behind the head, move with glances -->
       <img class="layer pupils shown" data-dir="front" src="apeyes.png" alt="">
       <img class="layer pupils"       data-dir="left"  src="apeyesleft.png" alt="">
@@ -317,7 +318,8 @@ window.dispatchEvent(new Event('mpReady'));
       <img class="layer mouth"       data-frame="3" src="apmouth3.png" alt="">
       <img class="layer mouth"       data-frame="4" src="apmouth4.png" alt="">
       <img class="layer mouth"       data-frame="5" src="apmouth5.png" alt="">
-    </div>
+    </div><!-- end head-wrap -->
+    </div><!-- end tilt-wrap -->
   </div>
 
   <div id="menuWrap">
@@ -373,6 +375,14 @@ window.dispatchEvent(new Event('mpReady'));
         </label>
         <div id="camStatus"></div>
         <div id="camSettings" style="display:none">
+          <label class="menuRow" style="margin-top:4px">
+            <input type="checkbox" id="toggleCamMouth" checked>
+            Mouth tracking
+          </label>
+          <label class="menuRow">
+            <input type="checkbox" id="toggleCamTilt" checked>
+            Head tilt
+          </label>
           <div class="camSliderRow">
             <label>
               <span>Head turn threshold</span>
@@ -380,7 +390,7 @@ window.dispatchEvent(new Event('mpReady'));
             </label>
             <input type="range" id="camYawThresh" min="3" max="30" value="12">
           </div>
-          <div class="camSliderRow">
+          <div id="camMouthSliderWrap" class="camSliderRow">
             <label>
               <span>Mouth open threshold</span>
               <span id="camMouthVal">0.04</span>
@@ -973,6 +983,10 @@ window.dispatchEvent(new Event('mpReady'));
   // camEnabled / camDirection / camMouthOpen are declared up top so
   // shouldAnimateMouth() can reference them from the start.
 
+  let camMouthEnabled = true;  // whether webcam drives mouth open
+  let camTiltEnabled  = true;  // whether webcam drives head tilt
+  let camTiltDeg      = 0;     // current applied tilt in degrees
+
   // Thresholds (tunable via sliders)
   let camYawThreshold   = 12;   // degrees of head yaw before switching direction
   let camMouthThreshold = 0.04; // lip-distance ratio to trigger mouth open
@@ -981,16 +995,37 @@ window.dispatchEvent(new Event('mpReady'));
   let camStream      = null;
   let camRunning     = false;
 
-  const camToggle       = document.getElementById('toggleCam');
-  const camSettingsDiv  = document.getElementById('camSettings');
-  const camStatusEl     = document.getElementById('camStatus');
-  const camPreviewEl    = document.getElementById('camPreview');
-  const camVideoEl      = document.getElementById('camVideo');
-  const camYawSlider    = document.getElementById('camYawThresh');
-  const camYawValEl     = document.getElementById('camYawVal');
-  const camMouthSlider  = document.getElementById('camMouthThresh');
-  const camMouthValEl   = document.getElementById('camMouthVal');
+  const camToggle        = document.getElementById('toggleCam');
+  const camSettingsDiv   = document.getElementById('camSettings');
+  const camStatusEl      = document.getElementById('camStatus');
+  const camPreviewEl     = document.getElementById('camPreview');
+  const camVideoEl       = document.getElementById('camVideo');
+  const camYawSlider     = document.getElementById('camYawThresh');
+  const camYawValEl      = document.getElementById('camYawVal');
+  const camMouthSlider   = document.getElementById('camMouthThresh');
+  const camMouthValEl    = document.getElementById('camMouthVal');
+  const camMouthSliderWrap = document.getElementById('camMouthSliderWrap');
   const camPreviewToggle = document.getElementById('toggleCamPreview');
+  const camMouthToggle   = document.getElementById('toggleCamMouth');
+  const camTiltToggle    = document.getElementById('toggleCamTilt');
+  const headWrapEl       = document.getElementById('tilt-wrap');
+
+  camMouthToggle.addEventListener('change', () => {
+    camMouthEnabled = camMouthToggle.checked;
+    camMouthSliderWrap.style.display = camMouthEnabled ? 'flex' : 'none';
+    if (!camMouthEnabled) {
+      camMouthOpen = false;
+      updateHeadLayer();
+    }
+  });
+
+  camTiltToggle.addEventListener('change', () => {
+    camTiltEnabled = camTiltToggle.checked;
+    if (!camTiltEnabled) {
+      camTiltDeg = 0;
+      applyHeadTilt(0);
+    }
+  });
 
   camYawSlider.addEventListener('input', () => {
     camYawThreshold = Number(camYawSlider.value);
@@ -1062,11 +1097,19 @@ window.dispatchEvent(new Event('mpReady'));
     requestAnimationFrame(camLoop);
   }
 
+  function applyHeadTilt(deg) {
+    // tilt-wrap only handles rotation; head-wrap inside it handles the bob.
+    // Keeping them on separate elements means neither transform clobbers the other.
+    headWrapEl.style.transform = deg === 0 ? '' : `rotate(${deg}deg)`;
+  }
+
   function disableCam() {
     camRunning = false;
     camEnabled = false;
     camDirection = null;
     camMouthOpen = false;
+    camTiltDeg = 0;
+    applyHeadTilt(0);
     camStatusEl.textContent = '';
     camSettingsDiv.style.display = 'none';
     camPreviewEl.style.display = 'none';
@@ -1082,11 +1125,13 @@ window.dispatchEvent(new Event('mpReady'));
     updateHeadLayer();
   }
 
-  // Smoothing: we don't want the head snapping left/right on every tiny
-  // movement, so we require the signal to stay on one side for a few
-  // frames before committing to a direction change.
+  // Smoothing histories for yaw and roll (tilt)
   let camYawHistory  = [];
+  let camRollHistory = [];
   const CAM_SMOOTH_FRAMES = 4;
+
+  // Max tilt degrees to apply to the puppet (caps extreme head tilts)
+  const CAM_MAX_TILT = 20;
 
   function camLoop() {
     if (!camRunning) return;
@@ -1132,24 +1177,51 @@ window.dispatchEvent(new Event('mpReady'));
           if (manualDirection === null) refreshHeadDirection();
         }
 
+        // ---- Head roll (tilt) ----
+        // Angle of the line between the two eye outer corners.
+        // Landmark 33 = left eye outer, 263 = right eye outer (face space).
+        // Because the preview is mirrored, a clockwise tilt in the mirror
+        // (right ear toward right shoulder) gives a positive angle, so we
+        // negate to make the puppet tilt the same way the user does.
+        if (camTiltEnabled) {
+          const eyeL = lm[33];
+          const eyeR = lm[263];
+          // atan2 gives the angle of the eye-to-eye vector; 0 = horizontal
+          const rawRoll = Math.atan2(eyeR.y - eyeL.y, eyeR.x - eyeL.x) * (180 / Math.PI);
+
+          camRollHistory.push(rawRoll);
+          if (camRollHistory.length > CAM_SMOOTH_FRAMES) camRollHistory.shift();
+          const smoothRoll = camRollHistory.reduce((a, b) => a + b, 0) / camRollHistory.length;
+
+          // Clamp and negate (mirror correction: right tilt in camera = right tilt on puppet)
+          const newTilt = Math.max(-CAM_MAX_TILT, Math.min(CAM_MAX_TILT, -smoothRoll));
+          if (Math.abs(newTilt - camTiltDeg) > 0.3) {
+            camTiltDeg = newTilt;
+            applyHeadTilt(camTiltDeg);
+          }
+        }
+
         // ---- Mouth open ----
         // Use the lip landmarks: upper lip top (13) and lower lip bottom (14).
         // Normalise by inter-eye distance so it's scale-independent.
-        const upperLip  = lm[13];
-        const lowerLip  = lm[14];
-        const leftEye   = lm[33];
-        const rightEye  = lm[263];
-        const eyeDist   = Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y);
-        const lipGap    = Math.abs(lowerLip.y - upperLip.y) / (eyeDist || 0.01);
-        const mouthOpen = lipGap > camMouthThreshold;
+        // Only runs when mouth tracking is enabled.
+        if (camMouthEnabled) {
+          const upperLip  = lm[13];
+          const lowerLip  = lm[14];
+          const leftEye   = lm[33];
+          const rightEye  = lm[263];
+          const eyeDist   = Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y);
+          const lipGap    = Math.abs(lowerLip.y - upperLip.y) / (eyeDist || 0.01);
+          const mouthOpen = lipGap > camMouthThreshold;
 
-        if (mouthOpen !== camMouthOpen) {
-          camMouthOpen = mouthOpen;
-          updateHeadLayer();
+          if (mouthOpen !== camMouthOpen) {
+            camMouthOpen = mouthOpen;
+            updateHeadLayer();
+          }
         }
 
       } else {
-        // No face detected — release webcam direction, keep mouth closed
+        // No face detected — release webcam direction, mouth, and tilt
         if (camDirection !== null) {
           camDirection = null;
           if (manualDirection === null) refreshHeadDirection();
@@ -1157,6 +1229,10 @@ window.dispatchEvent(new Event('mpReady'));
         if (camMouthOpen) {
           camMouthOpen = false;
           updateHeadLayer();
+        }
+        if (camTiltDeg !== 0) {
+          camTiltDeg = 0;
+          applyHeadTilt(0);
         }
       }
     }
