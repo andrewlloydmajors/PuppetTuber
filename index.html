@@ -61,11 +61,9 @@ window.dispatchEvent(new Event('mpReady'));
     width: min(90vw, 600px);
     aspect-ratio: 1 / 1;
     overflow: hidden;
-    transform-origin: bottom center;
-    transition: transform 0.15s ease-out;
   }
 
-  #stage img, #body-wrap, #tilt-wrap, #head-wrap {
+  #stage img, #puppet-wrap, #body-wrap, #tilt-wrap, #head-wrap {
     position: absolute;
     top: 0;
     left: 0;
@@ -73,6 +71,11 @@ window.dispatchEvent(new Event('mpReady'));
     height: 100%;
     pointer-events: none;
     user-select: none;
+  }
+
+  #puppet-wrap {
+    transform-origin: bottom center;
+    transition: transform 0.15s ease-out;
   }
 
   #body-wrap, #tilt-wrap, #head-wrap {
@@ -153,8 +156,11 @@ window.dispatchEvent(new Event('mpReady'));
     border-radius: 10px;
     padding: 14px 18px;
     width: 240px;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
     backdrop-filter: blur(6px);
     box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    box-sizing: border-box;
   }
 
   #settingsPanel.open { display: block; }
@@ -281,45 +287,48 @@ window.dispatchEvent(new Event('mpReady'));
 <body>
 
   <div id="stage">
-    <!-- Background: sits inside the stage so it only fills the puppet canvas -->
+    <!-- Background: outside puppet-wrap so it never rotates with the lean -->
     <div id="stageBg"></div>
 
-    <!-- Body wrap: bobs with full amplitude -->
-    <div id="body-wrap">
-      <img id="body" src="apbody.png" alt="">
-    </div>
+    <!-- Puppet wrap: lean pivots this, not the stage or background -->
+    <div id="puppet-wrap">
+      <!-- Body wrap: bobs with full amplitude -->
+      <div id="body-wrap">
+        <img id="body" src="apbody.png" alt="">
+      </div>
 
-    <!-- Tilt wrap: rotated by webcam roll, separate from bob animation -->
-    <div id="tilt-wrap">
-      <!-- Head wrap: bobs with less amplitude and a slight delay -->
-      <div id="head-wrap">
-      <!-- Eye whites: behind the body outline, tilts with the head -->
-      <img class="layer eyewhites shown" data-dir="front" src="apeyewhites.png" alt="">
-      <img class="layer eyewhites"       data-dir="left"  src="apeyewhitesleft.png" alt="">
-      <img class="layer eyewhites"       data-dir="right" src="apeyewhitesright.png" alt="">
-      <img class="layer pupils shown" data-dir="front" src="apeyes.png" alt="">
-      <img class="layer pupils"       data-dir="left"  src="apeyesleft.png" alt="">
-      <img class="layer pupils"       data-dir="right" src="apeyesright.png" alt="">
+      <!-- Tilt wrap: rotated by webcam roll, separate from bob animation -->
+      <div id="tilt-wrap">
+        <!-- Head wrap: bobs with less amplitude and a slight delay -->
+        <div id="head-wrap">
+        <!-- Eye whites: behind the body outline, tilts with the head -->
+        <img class="layer eyewhites shown" data-dir="front" src="apeyewhites.png" alt="">
+        <img class="layer eyewhites"       data-dir="left"  src="apeyewhitesleft.png" alt="">
+        <img class="layer eyewhites"       data-dir="right" src="apeyewhitesright.png" alt="">
+        <img class="layer pupils shown" data-dir="front" src="apeyes.png" alt="">
+        <img class="layer pupils"       data-dir="left"  src="apeyesleft.png" alt="">
+        <img class="layer pupils"       data-dir="right" src="apeyesright.png" alt="">
 
-      <!-- Head -->
-      <img class="layer head shown" data-dir="front" src="apheadfront.png" alt="">
-      <img class="layer head"       data-dir="left"  src="apheadleft.png" alt="">
-      <img class="layer head"       data-dir="right" src="apheadright.png" alt="">
-      <img class="layer head"       data-dir="frontsmile" src="apheadfrontsmile.png" alt="">
+        <!-- Head -->
+        <img class="layer head shown" data-dir="front" src="apheadfront.png" alt="">
+        <img class="layer head"       data-dir="left"  src="apheadleft.png" alt="">
+        <img class="layer head"       data-dir="right" src="apheadright.png" alt="">
+        <img class="layer head"       data-dir="frontsmile" src="apheadfrontsmile.png" alt="">
 
-      <!-- Blink overlay: on top of the head -->
-      <img class="layer blink" data-dir="front" src="apeyesblink.png" alt="">
-      <img class="layer blink" data-dir="left"  src="apeyesblinkleft.png" alt="">
-      <img class="layer blink" data-dir="right" src="apeyesblinkright.png" alt="">
+        <!-- Blink overlay: on top of the head -->
+        <img class="layer blink" data-dir="front" src="apeyesblink.png" alt="">
+        <img class="layer blink" data-dir="left"  src="apeyesblinkleft.png" alt="">
+        <img class="layer blink" data-dir="right" src="apeyesblinkright.png" alt="">
 
-      <!-- Mouth frames (only shown when facing front) -->
-      <img class="layer mouth shown" data-frame="1" src="apmouth1.png" alt="">
-      <img class="layer mouth"       data-frame="2" src="apmouth2.png" alt="">
-      <img class="layer mouth"       data-frame="3" src="apmouth3.png" alt="">
-      <img class="layer mouth"       data-frame="4" src="apmouth4.png" alt="">
-      <img class="layer mouth"       data-frame="5" src="apmouth5.png" alt="">
-    </div><!-- end head-wrap -->
-    </div><!-- end tilt-wrap -->
+        <!-- Mouth frames (only shown when facing front) -->
+        <img class="layer mouth shown" data-frame="1" src="apmouth1.png" alt="">
+        <img class="layer mouth"       data-frame="2" src="apmouth2.png" alt="">
+        <img class="layer mouth"       data-frame="3" src="apmouth3.png" alt="">
+        <img class="layer mouth"       data-frame="4" src="apmouth4.png" alt="">
+        <img class="layer mouth"       data-frame="5" src="apmouth5.png" alt="">
+        </div><!-- end head-wrap -->
+      </div><!-- end tilt-wrap -->
+    </div><!-- end puppet-wrap -->
   </div>
 
   <div id="menuWrap">
@@ -1034,6 +1043,8 @@ window.dispatchEvent(new Event('mpReady'));
     }
   });
 
+  const puppetWrapEl = document.getElementById('puppet-wrap');
+
   camLeanToggle.addEventListener('change', () => {
     camLeanEnabled = camLeanToggle.checked;
     if (!camLeanEnabled) {
@@ -1043,7 +1054,7 @@ window.dispatchEvent(new Event('mpReady'));
   });
 
   function applyLean(deg) {
-    stageEl.style.transform = deg === 0 ? '' : `rotate(${deg}deg)`;
+    puppetWrapEl.style.transform = deg === 0 ? '' : `rotate(${deg}deg)`;
   }
 
   camYawSlider.addEventListener('input', () => {
