@@ -4,6 +4,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>My Puppet</title>
+<script type="module">
+// MediaPipe FaceLandmarker — loaded as an ES module from CDN.
+// We attach the pieces we need to window so the main (non-module) script
+// can reach them after the import resolves.
+import {
+  FaceLandmarker,
+  FilesetResolver
+} from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+
+window._FaceLandmarker   = FaceLandmarker;
+window._FilesetResolver  = FilesetResolver;
+window._mpReady = true;
+window.dispatchEvent(new Event('mpReady'));
+</script>
 <style>
   html, body {
     margin: 0;
@@ -221,6 +235,46 @@
   #settingsPanel button:hover { background: rgba(255,255,255,0.2); }
 
   input[type="range"] { width: 100%; margin-top: 2px; }
+
+  /* ---- Webcam preview ---- */
+  #camPreview {
+    display: none;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: 6px;
+    overflow: hidden;
+    margin-top: 8px;
+    background: #000;
+    position: relative;
+  }
+
+  #camPreview video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1); /* mirror so it feels natural */
+    display: block;
+  }
+
+  #camStatus {
+    font-size: 11px;
+    margin-top: 4px;
+    opacity: 0.6;
+  }
+
+  .camSliderRow {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 6px;
+  }
+
+  .camSliderRow label {
+    font-size: 11px;
+    opacity: 0.7;
+    display: flex;
+    justify-content: space-between;
+  }
 </style>
 </head>
 <body>
@@ -312,6 +366,38 @@
       </div>
 
       <div class="menuSection">
+        <div class="menuSectionTitle">Webcam tracking</div>
+        <label class="menuRow">
+          <input type="checkbox" id="toggleCam">
+          Enable webcam tracking
+        </label>
+        <div id="camStatus"></div>
+        <div id="camSettings" style="display:none">
+          <div class="camSliderRow">
+            <label>
+              <span>Head turn threshold</span>
+              <span id="camYawVal">12°</span>
+            </label>
+            <input type="range" id="camYawThresh" min="3" max="30" value="12">
+          </div>
+          <div class="camSliderRow">
+            <label>
+              <span>Mouth open threshold</span>
+              <span id="camMouthVal">0.04</span>
+            </label>
+            <input type="range" id="camMouthThresh" min="1" max="20" value="4">
+          </div>
+          <div id="camPreview">
+            <video id="camVideo" autoplay playsinline muted></video>
+          </div>
+          <label class="menuRow" style="margin-top:6px; font-size:11px">
+            <input type="checkbox" id="toggleCamPreview" checked>
+            Show preview
+          </label>
+        </div>
+      </div>
+
+      <div class="menuSection">
         <div class="menuSectionTitle">Background</div>
         <label class="menuRow">
           Color
@@ -368,7 +454,11 @@
   let autopilotDirection = 'front'; // 'front' | 'left' | 'right'
 
   function refreshHeadDirection() {
-    const direction = manualDirection || (idleHeadEnabled ? autopilotDirection : 'front');
+    // Priority: manual key > webcam > idle head movement > front
+    const direction = manualDirection
+      || (camEnabled ? camDirection : null)
+      || (idleHeadEnabled ? autopilotDirection : null)
+      || 'front';
     if (direction !== currentDirection) {
       setHead(direction);
     }
@@ -384,7 +474,7 @@
   let threshold = 15;
 
   function shouldAnimateMouth() {
-    return spaceHeld || (micEnabled && currentVolume > threshold);
+    return spaceHeld || (micEnabled && currentVolume > threshold) || (camEnabled && camMouthOpen);
   }
 
   // ---- Smile expression ----
@@ -443,7 +533,7 @@
   // How long after talking stops before the smile appears, and how long it
   // stays. Both should comfortably fit inside AUTOPILOT_IDLE_DELAY below so
   // idle wandering doesn't kick in mid-smile.
-  const SMILE_DELAY_AFTER_TALK = 1500;
+  const SMILE_DELAY_AFTER_TALK = 400;
   const SMILE_DURATION = 2000;
 
   function scheduleSmileAfterTalk() {
@@ -866,14 +956,207 @@
     applyBackground();
   });
 
-  clearBgImage.addEventListener('click', () => {
-    if (bgImageURL) URL.revokeObjectURL(bgImageURL);
-    bgImageURL = null;
-    bgImagePicker.value = '';
-    bgImageName.textContent = '';
-    clearBgImage.style.display = 'none';
-    applyBackground();
+  // ---- Webcam / face tracking ----
+  // Uses MediaPipe FaceLandmarker (loaded as an ES module above).
+  // Drives head direction and mouth-open the same way manual keys do —
+  // webcam sets camDirection / camMouthOpen flags, and the existing
+  // shouldAnimateMouth() / refreshHeadDirection() logic applies them.
+  // Manual key presses still take priority over webcam input.
+
+  let camEnabled       = false;
+  let camDirection     = null;   // 'left' | 'right' | null — from webcam
+  let camMouthOpen     = false;  // true when webcam sees mouth open
+
+  // Thresholds (tunable via sliders)
+  let camYawThreshold   = 12;   // degrees of head yaw before switching direction
+  let camMouthThreshold = 0.04; // lip-distance ratio to trigger mouth open
+
+  let faceLandmarker = null;
+  let camStream      = null;
+  let camRunning     = false;
+
+  const camToggle       = document.getElementById('toggleCam');
+  const camSettingsDiv  = document.getElementById('camSettings');
+  const camStatusEl     = document.getElementById('camStatus');
+  const camPreviewEl    = document.getElementById('camPreview');
+  const camVideoEl      = document.getElementById('camVideo');
+  const camYawSlider    = document.getElementById('camYawThresh');
+  const camYawValEl     = document.getElementById('camYawVal');
+  const camMouthSlider  = document.getElementById('camMouthThresh');
+  const camMouthValEl   = document.getElementById('camMouthVal');
+  const camPreviewToggle = document.getElementById('toggleCamPreview');
+
+  camYawSlider.addEventListener('input', () => {
+    camYawThreshold = Number(camYawSlider.value);
+    camYawValEl.textContent = camYawThreshold + '°';
   });
+
+  camMouthSlider.addEventListener('input', () => {
+    camMouthThreshold = Number(camMouthSlider.value) / 100;
+    camMouthValEl.textContent = camMouthThreshold.toFixed(2);
+  });
+
+  camPreviewToggle.addEventListener('change', () => {
+    camPreviewEl.style.display = camPreviewToggle.checked ? 'block' : 'none';
+  });
+
+  camToggle.addEventListener('change', async () => {
+    if (camToggle.checked) {
+      await enableCam();
+    } else {
+      disableCam();
+    }
+  });
+
+  async function enableCam() {
+    camStatusEl.textContent = 'Loading face model…';
+    camSettingsDiv.style.display = 'block';
+
+    // Wait for MediaPipe ES module to finish loading if it hasn't yet
+    if (!window._mpReady) {
+      await new Promise(resolve => window.addEventListener('mpReady', resolve, { once: true }));
+    }
+
+    try {
+      const vision = await window._FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+      );
+      faceLandmarker = await window._FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+          delegate: 'GPU'
+        },
+        outputFaceBlendshapes: true,
+        runningMode: 'VIDEO',
+        numFaces: 1
+      });
+    } catch (err) {
+      camStatusEl.textContent = 'Failed to load face model.';
+      camToggle.checked = false;
+      camSettingsDiv.style.display = 'none';
+      return;
+    }
+
+    try {
+      camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+    } catch (err) {
+      camStatusEl.textContent = 'Camera access denied.';
+      camToggle.checked = false;
+      camSettingsDiv.style.display = 'none';
+      return;
+    }
+
+    camVideoEl.srcObject = camStream;
+    await new Promise(resolve => camVideoEl.addEventListener('loadeddata', resolve, { once: true }));
+
+    camEnabled = true;
+    camRunning = true;
+    camStatusEl.textContent = 'Tracking active';
+    camPreviewEl.style.display = camPreviewToggle.checked ? 'block' : 'none';
+    requestAnimationFrame(camLoop);
+  }
+
+  function disableCam() {
+    camRunning = false;
+    camEnabled = false;
+    camDirection = null;
+    camMouthOpen = false;
+    camStatusEl.textContent = '';
+    camSettingsDiv.style.display = 'none';
+    camPreviewEl.style.display = 'none';
+
+    if (camStream) {
+      camStream.getTracks().forEach(t => t.stop());
+      camStream = null;
+    }
+    camVideoEl.srcObject = null;
+
+    // Release webcam influence on puppet state
+    refreshHeadDirection();
+    updateHeadLayer();
+  }
+
+  // Smoothing: we don't want the head snapping left/right on every tiny
+  // movement, so we require the signal to stay on one side for a few
+  // frames before committing to a direction change.
+  let camYawHistory  = [];
+  const CAM_SMOOTH_FRAMES = 4;
+
+  function camLoop() {
+    if (!camRunning) return;
+
+    if (camVideoEl.readyState >= 2) {
+      const now = performance.now();
+      const results = faceLandmarker.detectForVideo(camVideoEl, now);
+
+      if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+        const lm = results.faceLandmarks[0];
+
+        // ---- Head yaw ----
+        // Compare the x-position of the nose tip (landmark 1) relative to
+        // the midpoint between the two ear-tragus landmarks (234 = right
+        // ear, 454 = left ear from the camera's perspective, which is
+        // mirrored, so 234 is the puppet's left).
+        // A positive offset means the nose is shifted right → head turned
+        // right in camera space → puppet looks left (mirrored).
+        const noseTip  = lm[1];
+        const earRight = lm[234]; // camera right = puppet left
+        const earLeft  = lm[454]; // camera left  = puppet right
+        const faceWidth = Math.abs(earLeft.x - earRight.x);
+
+        // Normalise nose offset as a fraction of face width, then convert
+        // to a rough degree equivalent (faceWidth ≈ 0.5 at 90° span).
+        const noseOffset = noseTip.x - (earRight.x + earLeft.x) / 2;
+        const yawDeg = (noseOffset / (faceWidth || 0.01)) * 90;
+
+        // Smooth over the last N frames
+        camYawHistory.push(yawDeg);
+        if (camYawHistory.length > CAM_SMOOTH_FRAMES) camYawHistory.shift();
+        const smoothYaw = camYawHistory.reduce((a, b) => a + b, 0) / camYawHistory.length;
+
+        // Positive smoothYaw = camera sees face turned right = puppet turns left
+        // (because the video is mirrored so movement feels natural to the user)
+        let newCamDir = null;
+        if (smoothYaw > camYawThreshold)       newCamDir = 'left';
+        else if (smoothYaw < -camYawThreshold) newCamDir = 'right';
+
+        if (newCamDir !== camDirection) {
+          camDirection = newCamDir;
+          // Only apply if no manual key is held
+          if (manualDirection === null) refreshHeadDirection();
+        }
+
+        // ---- Mouth open ----
+        // Use the lip landmarks: upper lip top (13) and lower lip bottom (14).
+        // Normalise by inter-eye distance so it's scale-independent.
+        const upperLip  = lm[13];
+        const lowerLip  = lm[14];
+        const leftEye   = lm[33];
+        const rightEye  = lm[263];
+        const eyeDist   = Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y);
+        const lipGap    = Math.abs(lowerLip.y - upperLip.y) / (eyeDist || 0.01);
+        const mouthOpen = lipGap > camMouthThreshold;
+
+        if (mouthOpen !== camMouthOpen) {
+          camMouthOpen = mouthOpen;
+          updateHeadLayer();
+        }
+
+      } else {
+        // No face detected — release webcam direction, keep mouth closed
+        if (camDirection !== null) {
+          camDirection = null;
+          if (manualDirection === null) refreshHeadDirection();
+        }
+        if (camMouthOpen) {
+          camMouthOpen = false;
+          updateHeadLayer();
+        }
+      }
+    }
+
+    requestAnimationFrame(camLoop);
+  }
 </script>
 
 </body>
