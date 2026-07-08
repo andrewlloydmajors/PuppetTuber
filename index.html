@@ -396,6 +396,10 @@ window.dispatchEvent(new Event('mpReady'));
             <input type="checkbox" id="toggleCamLean" checked>
             Body lean (follows face position)
           </label>
+          <label class="menuRow">
+            <input type="checkbox" id="toggleCamEyes" checked>
+            Eye tracking
+          </label>
           <div class="camSliderRow">
             <label>
               <span>Head turn threshold</span>
@@ -502,6 +506,8 @@ window.dispatchEvent(new Event('mpReady'));
   let camEnabled   = false;
   let camDirection = null;
   let camMouthOpen = false;
+  let camGazeXHistory = [];
+  let camGazeYHistory = [];
 
   function shouldAnimateMouth() {
     return spaceHeld || (micEnabled && currentVolume > threshold) || (camEnabled && camMouthOpen);
@@ -745,14 +751,19 @@ window.dispatchEvent(new Event('mpReady'));
     const anyArrow = ARROW_KEYS.some(k => pressedKeys.has(k));
     if (anyArrow) {
       manualEyeActive = true;
+      // Clear cam gaze history so there's no stale smoothing when manual releases
+      camGazeXHistory = [];
+      camGazeYHistory = [];
       glanceOffset = computeManualEyeOffset();
       updateEyeTransform();
     } else if (manualEyeActive) {
       manualEyeActive = false;
-      // Snap back to idle glance (zero if idle eye movement is off, the
-      // scheduler will take over from here on its own timer).
-      glanceOffset = { x: 0, y: 0 };
-      updateEyeTransform();
+      // If cam eye tracking isn't taking over, snap to idle or zero
+      if (!camEyeEnabled) {
+        glanceOffset = { x: 0, y: 0 };
+        updateEyeTransform();
+      }
+      // If camEyeEnabled, the next camLoop frame will update glanceOffset naturally
     }
   }
 
@@ -996,11 +1007,12 @@ window.dispatchEvent(new Event('mpReady'));
   // camEnabled / camDirection / camMouthOpen are declared up top so
   // shouldAnimateMouth() can reference them from the start.
 
-  let camMouthEnabled = true;  // whether webcam drives mouth open
-  let camTiltEnabled  = true;  // whether webcam drives head tilt
-  let camLeanEnabled  = true;  // whether webcam drives body lean
-  let camTiltDeg      = 0;     // current applied tilt in degrees
-  let camLeanDeg      = 0;     // current applied lean in degrees
+  let camMouthEnabled = true;
+  let camTiltEnabled  = true;
+  let camLeanEnabled  = true;
+  let camEyeEnabled   = true;  // whether webcam drives pupil gaze
+  let camTiltDeg      = 0;
+  let camLeanDeg      = 0;
 
   // Thresholds (tunable via sliders)
   let camYawThreshold   = 12;   // degrees of head yaw before switching direction
@@ -1024,6 +1036,7 @@ window.dispatchEvent(new Event('mpReady'));
   const camMouthToggle   = document.getElementById('toggleCamMouth');
   const camTiltToggle    = document.getElementById('toggleCamTilt');
   const camLeanToggle    = document.getElementById('toggleCamLean');
+  const camEyeToggle     = document.getElementById('toggleCamEyes');
   const headWrapEl       = document.getElementById('tilt-wrap');
 
   camMouthToggle.addEventListener('change', () => {
@@ -1050,6 +1063,14 @@ window.dispatchEvent(new Event('mpReady'));
     if (!camLeanEnabled) {
       camLeanDeg = 0;
       applyLean(0);
+    }
+  });
+
+  camEyeToggle.addEventListener('change', () => {
+    camEyeEnabled = camEyeToggle.checked;
+    if (!camEyeEnabled && !manualEyeActive && !idleEyeEnabled) {
+      glanceOffset = { x: 0, y: 0 };
+      updateEyeTransform();
     }
   });
 
@@ -1140,8 +1161,14 @@ window.dispatchEvent(new Event('mpReady'));
     camMouthOpen = false;
     camTiltDeg = 0;
     camLeanDeg = 0;
+    camGazeXHistory = [];
+    camGazeYHistory = [];
     applyHeadTilt(0);
     applyLean(0);
+    if (!manualEyeActive && !idleEyeEnabled) {
+      glanceOffset = { x: 0, y: 0 };
+      updateEyeTransform();
+    }
     camStatusEl.textContent = '';
     camSettingsDiv.style.display = 'none';
     camPreviewEl.style.display = 'none';
@@ -1157,15 +1184,17 @@ window.dispatchEvent(new Event('mpReady'));
     updateHeadLayer();
   }
 
-  // Smoothing histories for yaw, roll (tilt), and lateral position (lean)
+  // Smoothing histories for yaw, roll (tilt), lateral position (lean), and iris gaze
+  // camGazeXHistory / camGazeYHistory are declared up top alongside other cam state.
   let camYawHistory  = [];
   let camRollHistory = [];
   let camLeanHistory = [];
   const CAM_SMOOTH_FRAMES = 4;
+  const CAM_GAZE_SMOOTH_FRAMES = 6;
 
   // Max degrees for tilt and lean
   const CAM_MAX_TILT = 20;
-  const CAM_MAX_LEAN = 12; // lean is subtler — shoulders don't move as much
+  const CAM_MAX_LEAN = 12;
 
   function camLoop() {
     if (!camRunning) return;
@@ -1277,6 +1306,67 @@ window.dispatchEvent(new Event('mpReady'));
           }
         }
 
+        // ---- Iris gaze tracking ----
+        // MediaPipe provides iris landmarks: 468-472 for left iris,
+        // 473-477 for right iris (center of iris = 468 and 473).
+        // Eye socket corners: left eye inner 133/outer 33, right inner 362/outer 263.
+        // We measure each iris center relative to its socket, average both
+        // eyes, then write directly into glanceOffset — the same variable
+        // used by idle glance and manual arrow keys.
+        // Priority: manual arrow keys > webcam gaze > idle glance.
+        if (camEyeEnabled && !manualEyeActive) {
+          const leftIris  = lm[468]; // left iris center
+          const rightIris = lm[473]; // right iris center
+
+          // Left eye socket: outer corner 33, inner corner 133
+          const leftOuter  = lm[33];
+          const leftInner  = lm[133];
+          const leftTop    = lm[159];
+          const leftBottom = lm[145];
+
+          // Right eye socket: inner corner 362, outer corner 263
+          const rightInner = lm[362];
+          const rightOuter = lm[263];
+          const rightTop   = lm[386];
+          const rightBottom = lm[374];
+
+          // Normalise iris position within the eye socket: -1 (far left) to +1 (far right)
+          const leftEyeW  = Math.abs(leftOuter.x  - leftInner.x)  || 0.01;
+          const leftEyeH  = Math.abs(leftBottom.y - leftTop.y)    || 0.01;
+          const rightEyeW = Math.abs(rightOuter.x - rightInner.x) || 0.01;
+          const rightEyeH = Math.abs(rightBottom.y - rightTop.y)  || 0.01;
+
+          const leftGazeX  = (leftIris.x  - (leftOuter.x  + leftInner.x)  / 2) / leftEyeW;
+          const leftGazeY  = (leftIris.y  - (leftTop.y    + leftBottom.y)  / 2) / leftEyeH;
+          const rightGazeX = (rightIris.x - (rightOuter.x + rightInner.x) / 2) / rightEyeW;
+          const rightGazeY = (rightIris.y - (rightTop.y   + rightBottom.y) / 2) / rightEyeH;
+
+          // Average both eyes; negate X because video is mirrored
+          const rawGazeX = -((leftGazeX + rightGazeX) / 2);
+          const rawGazeY =   (leftGazeY + rightGazeY) / 2;
+
+          camGazeXHistory.push(rawGazeX);
+          camGazeYHistory.push(rawGazeY);
+          if (camGazeXHistory.length > CAM_GAZE_SMOOTH_FRAMES) camGazeXHistory.shift();
+          if (camGazeYHistory.length > CAM_GAZE_SMOOTH_FRAMES) camGazeYHistory.shift();
+
+          const smoothGazeX = camGazeXHistory.reduce((a, b) => a + b, 0) / camGazeXHistory.length;
+          const smoothGazeY = camGazeYHistory.reduce((a, b) => a + b, 0) / camGazeYHistory.length;
+
+          // Scale into the same EYE_GLANCE_DISTANCE range used by arrow keys
+          const newGazeOffset = {
+            x: smoothGazeX * EYE_GLANCE_DISTANCE * 3,
+            y: smoothGazeY * EYE_GLANCE_DISTANCE * 3
+          };
+
+          // Only update if meaningfully different to avoid constant repaints
+          if (Math.abs(newGazeOffset.x - glanceOffset.x) > 0.05 ||
+              Math.abs(newGazeOffset.y - glanceOffset.y) > 0.05) {
+            glanceOffset = newGazeOffset;
+            updateEyeTransform();
+          }
+        }
+
       } else {
         // No face detected — release webcam direction, mouth, and tilt
         if (camDirection !== null) {
@@ -1294,6 +1384,14 @@ window.dispatchEvent(new Event('mpReady'));
         if (camLeanDeg !== 0) {
           camLeanDeg = 0;
           applyLean(0);
+        }
+        if (camEyeEnabled && !manualEyeActive) {
+          camGazeXHistory = [];
+          camGazeYHistory = [];
+          if (glanceOffset.x !== 0 || glanceOffset.y !== 0) {
+            glanceOffset = { x: 0, y: 0 };
+            updateEyeTransform();
+          }
         }
       }
     }
