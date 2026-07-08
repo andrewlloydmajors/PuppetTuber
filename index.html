@@ -61,6 +61,8 @@ window.dispatchEvent(new Event('mpReady'));
     width: min(90vw, 600px);
     aspect-ratio: 1 / 1;
     overflow: hidden;
+    transform-origin: bottom center;
+    transition: transform 0.15s ease-out;
   }
 
   #stage img, #body-wrap, #tilt-wrap, #head-wrap {
@@ -284,11 +286,6 @@ window.dispatchEvent(new Event('mpReady'));
 
     <!-- Body wrap: bobs with full amplitude -->
     <div id="body-wrap">
-      <!-- Eye whites: lowest layer, static, behind the body -->
-      <img class="layer eyewhites shown" data-dir="front" src="apeyewhites.png" alt="">
-      <img class="layer eyewhites"       data-dir="left"  src="apeyewhitesleft.png" alt="">
-      <img class="layer eyewhites"       data-dir="right" src="apeyewhitesright.png" alt="">
-
       <img id="body" src="apbody.png" alt="">
     </div>
 
@@ -296,7 +293,10 @@ window.dispatchEvent(new Event('mpReady'));
     <div id="tilt-wrap">
       <!-- Head wrap: bobs with less amplitude and a slight delay -->
       <div id="head-wrap">
-      <!-- Pupils: behind the head, move with glances -->
+      <!-- Eye whites: behind the body outline, tilts with the head -->
+      <img class="layer eyewhites shown" data-dir="front" src="apeyewhites.png" alt="">
+      <img class="layer eyewhites"       data-dir="left"  src="apeyewhitesleft.png" alt="">
+      <img class="layer eyewhites"       data-dir="right" src="apeyewhitesright.png" alt="">
       <img class="layer pupils shown" data-dir="front" src="apeyes.png" alt="">
       <img class="layer pupils"       data-dir="left"  src="apeyesleft.png" alt="">
       <img class="layer pupils"       data-dir="right" src="apeyesright.png" alt="">
@@ -382,6 +382,10 @@ window.dispatchEvent(new Event('mpReady'));
           <label class="menuRow">
             <input type="checkbox" id="toggleCamTilt" checked>
             Head tilt
+          </label>
+          <label class="menuRow">
+            <input type="checkbox" id="toggleCamLean" checked>
+            Body lean (follows face position)
           </label>
           <div class="camSliderRow">
             <label>
@@ -985,7 +989,9 @@ window.dispatchEvent(new Event('mpReady'));
 
   let camMouthEnabled = true;  // whether webcam drives mouth open
   let camTiltEnabled  = true;  // whether webcam drives head tilt
+  let camLeanEnabled  = true;  // whether webcam drives body lean
   let camTiltDeg      = 0;     // current applied tilt in degrees
+  let camLeanDeg      = 0;     // current applied lean in degrees
 
   // Thresholds (tunable via sliders)
   let camYawThreshold   = 12;   // degrees of head yaw before switching direction
@@ -1008,6 +1014,7 @@ window.dispatchEvent(new Event('mpReady'));
   const camPreviewToggle = document.getElementById('toggleCamPreview');
   const camMouthToggle   = document.getElementById('toggleCamMouth');
   const camTiltToggle    = document.getElementById('toggleCamTilt');
+  const camLeanToggle    = document.getElementById('toggleCamLean');
   const headWrapEl       = document.getElementById('tilt-wrap');
 
   camMouthToggle.addEventListener('change', () => {
@@ -1026,6 +1033,18 @@ window.dispatchEvent(new Event('mpReady'));
       applyHeadTilt(0);
     }
   });
+
+  camLeanToggle.addEventListener('change', () => {
+    camLeanEnabled = camLeanToggle.checked;
+    if (!camLeanEnabled) {
+      camLeanDeg = 0;
+      applyLean(0);
+    }
+  });
+
+  function applyLean(deg) {
+    stageEl.style.transform = deg === 0 ? '' : `rotate(${deg}deg)`;
+  }
 
   camYawSlider.addEventListener('input', () => {
     camYawThreshold = Number(camYawSlider.value);
@@ -1109,7 +1128,9 @@ window.dispatchEvent(new Event('mpReady'));
     camDirection = null;
     camMouthOpen = false;
     camTiltDeg = 0;
+    camLeanDeg = 0;
     applyHeadTilt(0);
+    applyLean(0);
     camStatusEl.textContent = '';
     camSettingsDiv.style.display = 'none';
     camPreviewEl.style.display = 'none';
@@ -1125,13 +1146,15 @@ window.dispatchEvent(new Event('mpReady'));
     updateHeadLayer();
   }
 
-  // Smoothing histories for yaw and roll (tilt)
+  // Smoothing histories for yaw, roll (tilt), and lateral position (lean)
   let camYawHistory  = [];
   let camRollHistory = [];
+  let camLeanHistory = [];
   const CAM_SMOOTH_FRAMES = 4;
 
-  // Max tilt degrees to apply to the puppet (caps extreme head tilts)
+  // Max degrees for tilt and lean
   const CAM_MAX_TILT = 20;
+  const CAM_MAX_LEAN = 12; // lean is subtler — shoulders don't move as much
 
   function camLoop() {
     if (!camRunning) return;
@@ -1175,6 +1198,29 @@ window.dispatchEvent(new Event('mpReady'));
           camDirection = newCamDir;
           // Only apply if no manual key is held
           if (manualDirection === null) refreshHeadDirection();
+        }
+
+        // ---- Body lean (lateral face position) ----
+        // The nose tip x position ranges 0 (left edge) to 1 (right edge).
+        // Center = 0.5. Because the preview is mirrored, face on the left
+        // of the frame means the puppet leans left (toward camera).
+        // We map the offset from center to a lean angle on the whole stage,
+        // pivoting from the bottom so it feels like leaning from the hips.
+        if (camLeanEnabled) {
+          // noseTip is already computed above for yaw
+          const lateralOffset = noseTip.x - 0.5; // -0.5 to +0.5
+          // Mirror: face right in camera = puppet leans left
+          const rawLean = -lateralOffset * CAM_MAX_LEAN * 2;
+
+          camLeanHistory.push(rawLean);
+          if (camLeanHistory.length > CAM_SMOOTH_FRAMES) camLeanHistory.shift();
+          const smoothLean = camLeanHistory.reduce((a, b) => a + b, 0) / camLeanHistory.length;
+          const newLean = Math.max(-CAM_MAX_LEAN, Math.min(CAM_MAX_LEAN, smoothLean));
+
+          if (Math.abs(newLean - camLeanDeg) > 0.2) {
+            camLeanDeg = newLean;
+            applyLean(camLeanDeg);
+          }
         }
 
         // ---- Head roll (tilt) ----
@@ -1233,6 +1279,10 @@ window.dispatchEvent(new Event('mpReady'));
         if (camTiltDeg !== 0) {
           camTiltDeg = 0;
           applyHeadTilt(0);
+        }
+        if (camLeanDeg !== 0) {
+          camLeanDeg = 0;
+          applyLean(0);
         }
       }
     }
