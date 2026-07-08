@@ -473,6 +473,13 @@ window.dispatchEvent(new Event('mpReady'));
   let currentVolume = 0; // roughly 0-100
   let threshold = 15;
 
+  // Webcam state — declared here so shouldAnimateMouth() and
+  // refreshHeadDirection() can reference them before the webcam section
+  // initialises later in the script.
+  let camEnabled   = false;
+  let camDirection = null;
+  let camMouthOpen = false;
+
   function shouldAnimateMouth() {
     return spaceHeld || (micEnabled && currentVolume > threshold) || (camEnabled && camMouthOpen);
   }
@@ -963,9 +970,8 @@ window.dispatchEvent(new Event('mpReady'));
   // shouldAnimateMouth() / refreshHeadDirection() logic applies them.
   // Manual key presses still take priority over webcam input.
 
-  let camEnabled       = false;
-  let camDirection     = null;   // 'left' | 'right' | null — from webcam
-  let camMouthOpen     = false;  // true when webcam sees mouth open
+  // camEnabled / camDirection / camMouthOpen are declared up top so
+  // shouldAnimateMouth() can reference them from the start.
 
   // Thresholds (tunable via sliders)
   let camYawThreshold   = 12;   // degrees of head yaw before switching direction
