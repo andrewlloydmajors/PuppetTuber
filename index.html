@@ -507,6 +507,8 @@ window.dispatchEvent(new Event('mpReady'));
   let camEnabled   = false;
   let camDirection = null;
   let camMouthOpen = false;
+  let camBlinking  = false; // true when webcam detects eyes closed
+  let camMouthWide = false; // true when webcam sees a wide open O-shape
   let camGazeXHistory = [];
   let camGazeYHistory = [];
 
@@ -561,6 +563,12 @@ window.dispatchEvent(new Event('mpReady'));
     if (shouldAnimateMouth()) {
       const frame = 1 + Math.floor(Math.random() * 5); // 1-5
       setActive(mouthLayers, frame);
+    } else if (micEnabled && camMouthWide) {
+      // Mic is on but quiet, and webcam sees a wide-open O-shape mouth
+      setActive(mouthLayers, 5); // mouth5 = O-face
+    } else if (micEnabled && camMouthOpen) {
+      // Mic is on but quiet, and webcam sees mouth open — idle open shape
+      setActive(mouthLayers, 2); // mouth2 = open but still
     } else {
       setActive(mouthLayers, 1); // closed
     }
@@ -1169,9 +1177,11 @@ window.dispatchEvent(new Event('mpReady'));
   }
 
   function applyHeadTilt(deg) {
-    // tilt-wrap only handles rotation; head-wrap inside it handles the bob.
-    // Keeping them on separate elements means neither transform clobbers the other.
-    headWrapEl.style.transform = deg === 0 ? '' : `rotate(${deg}deg)`;
+    // Subtract the current lean angle so the head stays visually upright
+    // when the body leans. Without this, a left lean also visually tilts
+    // the head left since tilt-wrap is inside puppet-wrap.
+    const compensated = deg - camLeanDeg;
+    headWrapEl.style.transform = compensated === 0 ? '' : `rotate(${compensated}deg)`;
   }
 
   function disableCam() {
@@ -1179,8 +1189,10 @@ window.dispatchEvent(new Event('mpReady'));
     camEnabled = false;
     camDirection = null;
     camMouthOpen = false;
+    camMouthWide = false;
     camTiltDeg = 0;
     camLeanDeg = 0;
+    camBlinking = false;
     camGazeXHistory = [];
     camGazeYHistory = [];
     applyHeadTilt(0);
@@ -1225,9 +1237,11 @@ window.dispatchEvent(new Event('mpReady'));
   // A state change only commits after it's been the candidate for
   // CAM_DEBOUNCE_MS continuously — a single off-frame won't flip it back.
   const camPending = {
-    dir:   { value: null, since: 0 },
+    dir:   { value: null,  since: 0 },
     mouth: { value: false, since: 0 },
-    smile: { value: false, since: 0 }
+    smile: { value: false, since: 0 },
+    blink: { value: false, since: 0 },
+    wide:  { value: false, since: 0 }
   };
 
   function debounceSet(key, newValue, commitFn) {
@@ -1313,6 +1327,7 @@ window.dispatchEvent(new Event('mpReady'));
           if (Math.abs(newLean - camLeanDeg) > 0.2) {
             camLeanDeg = newLean;
             applyLean(camLeanDeg);
+            applyHeadTilt(camTiltDeg); // recompute compensation against new lean
           }
         }
 
@@ -1362,6 +1377,8 @@ window.dispatchEvent(new Event('mpReady'));
 
         // ---- Mouth open ----
         // Suppressed while smiling so top-teeth smiles don't trigger talking.
+        // Also detects a wide-open O-shape via the jawOpen blendshape for
+        // the open-but-silent idle shape logic.
         if (camMouthEnabled) {
           const upperLip  = lm[13];
           const lowerLip  = lm[14];
@@ -1369,13 +1386,53 @@ window.dispatchEvent(new Event('mpReady'));
           const rightEye  = lm[263];
           const eyeDist   = Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y);
           const lipGap    = Math.abs(lowerLip.y - upperLip.y) / (eyeDist || 0.01);
-          // If currently smiling (pending or committed), don't trigger mouth-open
           const mouthOpen = !camSmiling && lipGap > camMouthThreshold;
+
+          // Wide open O-face: use jawOpen blendshape (threshold higher than talk)
+          let jawOpen = 0;
+          if (results.faceBlendshapes && results.faceBlendshapes.length > 0) {
+            const bs = results.faceBlendshapes[0].categories;
+            const jaw = bs.find(b => b.categoryName === 'jawOpen');
+            if (jaw) jawOpen = jaw.score;
+          }
+          const mouthWide = !camSmiling && jawOpen > 0.6;
 
           debounceSet('mouth', mouthOpen, (open) => {
             if (open !== camMouthOpen) {
               camMouthOpen = open;
               updateHeadLayer();
+            }
+          });
+
+          debounceSet('wide', mouthWide, (wide) => {
+            if (wide !== camMouthWide) {
+              camMouthWide = wide;
+              updateHeadLayer();
+            }
+          });
+        }
+
+        // ---- Blink detection ----
+        // eyeBlinkLeft + eyeBlinkRight blendshapes. When blinking:
+        // - trigger the blink overlay layer (same as the auto-blink timer)
+        // - freeze gaze so the iris slides into garbage positions
+        if (results.faceBlendshapes && results.faceBlendshapes.length > 0) {
+          const bs = results.faceBlendshapes[0].categories;
+          const blinkL = bs.find(b => b.categoryName === 'eyeBlinkLeft');
+          const blinkR = bs.find(b => b.categoryName === 'eyeBlinkRight');
+          const blinkScore = blinkL && blinkR ? (blinkL.score + blinkR.score) / 2 : 0;
+          const nowBlinking = blinkScore > 0.4;
+
+          debounceSet('blink', nowBlinking, (blinking) => {
+            if (blinking === camBlinking) return;
+            camBlinking = blinking;
+            if (blinking) {
+              // Show blink overlay for the current head direction
+              setActive(blinkLayers, currentDirection);
+              blinkVisible = true;
+            } else {
+              setActive(blinkLayers, null);
+              blinkVisible = false;
             }
           });
         }
@@ -1388,7 +1445,7 @@ window.dispatchEvent(new Event('mpReady'));
         // eyes, then write directly into glanceOffset — the same variable
         // used by idle glance and manual arrow keys.
         // Priority: manual arrow keys > webcam gaze > idle glance.
-        if (camEyeEnabled && !manualEyeActive) {
+        if (camEyeEnabled && !manualEyeActive && !camBlinking) {
           const leftIris  = lm[468]; // left iris center
           const rightIris = lm[473]; // right iris center
 
@@ -1448,7 +1505,14 @@ window.dispatchEvent(new Event('mpReady'));
         camPending.dir.value   = null;
         camPending.mouth.value = false;
         camPending.smile.value = false;
+        camPending.blink.value = false;
+        camPending.wide.value  = false;
 
+        if (camBlinking) {
+          camBlinking = false;
+          setActive(blinkLayers, null);
+          blinkVisible = false;
+        }
         if (camDirection !== null) {
           camDirection = null;
           if (manualDirection === null) refreshHeadDirection();
