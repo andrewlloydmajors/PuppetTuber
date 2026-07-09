@@ -513,7 +513,10 @@ window.dispatchEvent(new Event('mpReady'));
   let camGazeYHistory = [];
 
   function shouldAnimateMouth() {
-    return spaceHeld || (micEnabled && currentVolume > threshold) || (camEnabled && camMouthOpen);
+    // Webcam mouth state (camMouthOpen/camMouthWide) never drives the talking
+    // animation — it only feeds the idle-open-shape display logic in
+    // updateHeadLayer so it can coexist cleanly with mic and Space.
+    return spaceHeld || (micEnabled && currentVolume > threshold);
   }
 
   // ---- Smile expression ----
@@ -563,12 +566,12 @@ window.dispatchEvent(new Event('mpReady'));
     if (shouldAnimateMouth()) {
       const frame = 1 + Math.floor(Math.random() * 5); // 1-5
       setActive(mouthLayers, frame);
-    } else if (micEnabled && camMouthWide) {
-      // Mic is on but quiet, and webcam sees a wide-open O-shape mouth
-      setActive(mouthLayers, 5); // mouth5 = O-face
-    } else if (micEnabled && camMouthOpen) {
-      // Mic is on but quiet, and webcam sees mouth open — idle open shape
-      setActive(mouthLayers, 2); // mouth2 = open but still
+    } else if (camEnabled && camMouthWide) {
+      // Webcam sees wide-open O-shape — show O-face regardless of mic state
+      setActive(mouthLayers, 5);
+    } else if (camEnabled && camMouthOpen) {
+      // Webcam sees mouth open but no talking trigger — idle open shape
+      setActive(mouthLayers, 2);
     } else {
       setActive(mouthLayers, 1); // closed
     }
@@ -1415,19 +1418,20 @@ window.dispatchEvent(new Event('mpReady'));
         // ---- Blink detection ----
         // eyeBlinkLeft + eyeBlinkRight blendshapes. When blinking:
         // - trigger the blink overlay layer (same as the auto-blink timer)
-        // - freeze gaze so the iris slides into garbage positions
+        // - freeze gaze immediately (before debounce commits) so iris landmarks
+        //   don't slide into garbage positions as eyes close
+        let rawBlinkScore = 0;
         if (results.faceBlendshapes && results.faceBlendshapes.length > 0) {
           const bs = results.faceBlendshapes[0].categories;
           const blinkL = bs.find(b => b.categoryName === 'eyeBlinkLeft');
           const blinkR = bs.find(b => b.categoryName === 'eyeBlinkRight');
-          const blinkScore = blinkL && blinkR ? (blinkL.score + blinkR.score) / 2 : 0;
-          const nowBlinking = blinkScore > 0.4;
+          rawBlinkScore = blinkL && blinkR ? (blinkL.score + blinkR.score) / 2 : 0;
+          const nowBlinking = rawBlinkScore > 0.4;
 
           debounceSet('blink', nowBlinking, (blinking) => {
             if (blinking === camBlinking) return;
             camBlinking = blinking;
             if (blinking) {
-              // Show blink overlay for the current head direction
               setActive(blinkLayers, currentDirection);
               blinkVisible = true;
             } else {
@@ -1438,14 +1442,10 @@ window.dispatchEvent(new Event('mpReady'));
         }
 
         // ---- Iris gaze tracking ----
-        // MediaPipe provides iris landmarks: 468-472 for left iris,
-        // 473-477 for right iris (center of iris = 468 and 473).
-        // Eye socket corners: left eye inner 133/outer 33, right inner 362/outer 263.
-        // We measure each iris center relative to its socket, average both
-        // eyes, then write directly into glanceOffset — the same variable
-        // used by idle glance and manual arrow keys.
-        // Priority: manual arrow keys > webcam gaze > idle glance.
-        if (camEyeEnabled && !manualEyeActive && !camBlinking) {
+        // Freeze as soon as blink score is elevated — don't wait for debounce,
+        // because the iris slides immediately as the eye closes.
+        const eyesClosing = rawBlinkScore > 0.25;
+        if (camEyeEnabled && !manualEyeActive && !eyesClosing) {
           const leftIris  = lm[468]; // left iris center
           const rightIris = lm[473]; // right iris center
 
@@ -1461,38 +1461,56 @@ window.dispatchEvent(new Event('mpReady'));
           const rightTop   = lm[386];
           const rightBottom = lm[374];
 
-          // Normalise iris position within the eye socket: -1 (far left) to +1 (far right)
-          const leftEyeW  = Math.abs(leftOuter.x  - leftInner.x)  || 0.01;
-          const leftEyeH  = Math.abs(leftBottom.y - leftTop.y)    || 0.01;
-          const rightEyeW = Math.abs(rightOuter.x - rightInner.x) || 0.01;
-          const rightEyeH = Math.abs(rightBottom.y - rightTop.y)  || 0.01;
+          // Use eye-look blendshapes for gaze — more reliable than raw iris
+          // landmark positions, especially for vertical (up/down) gaze which
+          // is hard to measure accurately from landmark geometry alone.
+          // eyeLookOutLeft  = left eye looking toward left ear  (camera right, puppet left after mirror)
+          // eyeLookInLeft   = left eye looking toward nose      (camera left,  puppet right after mirror)
+          // eyeLookUpLeft   = left eye looking up
+          // eyeLookDownLeft = left eye looking down
+          // Right eye counterparts are mirrored: OutRight = right ear = camera left = puppet right
+          let gazeX = 0, gazeY = 0;
 
-          const leftGazeX  = (leftIris.x  - (leftOuter.x  + leftInner.x)  / 2) / leftEyeW;
-          const leftGazeY  = (leftIris.y  - (leftTop.y    + leftBottom.y)  / 2) / leftEyeH;
-          const rightGazeX = (rightIris.x - (rightOuter.x + rightInner.x) / 2) / rightEyeW;
-          const rightGazeY = (rightIris.y - (rightTop.y   + rightBottom.y) / 2) / rightEyeH;
+          if (results.faceBlendshapes && results.faceBlendshapes.length > 0) {
+            const bs = results.faceBlendshapes[0].categories;
+            const get = name => (bs.find(b => b.categoryName === name) || { score: 0 }).score;
 
-          // Average both eyes; negate X because video is mirrored,
-          // negate Y because MediaPipe Y increases downward but puppet Y
-          // should increase upward (looking up in real life = pupils up on puppet).
-          const rawGazeX = -((leftGazeX + rightGazeX) / 2);
-          const rawGazeY = -((leftGazeY + rightGazeY) / 2);
+            // Left eye: Out = camera-right, In = camera-left
+            const leftOut  = get('eyeLookOutLeft');   // camera right
+            const leftIn   = get('eyeLookInLeft');    // camera left
+            const leftUp   = get('eyeLookUpLeft');
+            const leftDown = get('eyeLookDownLeft');
 
-          camGazeXHistory.push(rawGazeX);
-          camGazeYHistory.push(rawGazeY);
-          if (camGazeXHistory.length > CAM_GAZE_SMOOTH_FRAMES) camGazeXHistory.shift();
-          if (camGazeYHistory.length > CAM_GAZE_SMOOTH_FRAMES) camGazeYHistory.shift();
+            // Right eye: Out = camera-left, In = camera-right
+            const rightOut = get('eyeLookOutRight');  // camera left
+            const rightIn  = get('eyeLookInRight');   // camera right
+            const rightUp  = get('eyeLookUpRight');
+            const rightDown = get('eyeLookDownRight');
 
-          const smoothGazeX = camGazeXHistory.reduce((a, b) => a + b, 0) / camGazeXHistory.length;
-          const smoothGazeY = camGazeYHistory.reduce((a, b) => a + b, 0) / camGazeYHistory.length;
+            // Horizontal: camera-right is positive raw; negate for puppet mirror.
+            const rawX = ((leftOut - leftIn) + (rightIn - rightOut)) / 2;
+            // Vertical: down blendshapes are reliable; up blendshapes are
+            // underreported by MediaPipe so we scale them up 2x to compensate.
+            const leftUpScaled  = leftUp  * 2;
+            const rightUpScaled = rightUp * 2;
+            const rawY = ((leftDown - leftUpScaled) + (rightDown - rightUpScaled)) / 2;
 
-          // Scale into the same EYE_GLANCE_DISTANCE range used by arrow keys
-          const newGazeOffset = {
-            x: smoothGazeX * EYE_GLANCE_DISTANCE * 3,
-            y: smoothGazeY * EYE_GLANCE_DISTANCE * 3
-          };
+            camGazeXHistory.push(rawX);
+            camGazeYHistory.push(rawY);
+            if (camGazeXHistory.length > CAM_GAZE_SMOOTH_FRAMES) camGazeXHistory.shift();
+            if (camGazeYHistory.length > CAM_GAZE_SMOOTH_FRAMES) camGazeYHistory.shift();
 
-          // Only update if meaningfully different to avoid constant repaints
+            const smoothX = camGazeXHistory.reduce((a, b) => a + b, 0) / camGazeXHistory.length;
+            const smoothY = camGazeYHistory.reduce((a, b) => a + b, 0) / camGazeYHistory.length;
+
+            // Scale into the glance offset range. Blendshape scores are 0-1 per
+            // direction, so net range is roughly -1 to +1 after differencing.
+            gazeX = -smoothX * EYE_GLANCE_DISTANCE * 3; // negate for mirror
+            gazeY =  smoothY * EYE_GLANCE_DISTANCE * 3; // positive = down = correct
+          }
+
+          const newGazeOffset = { x: gazeX, y: gazeY };
+
           if (Math.abs(newGazeOffset.x - glanceOffset.x) > 0.05 ||
               Math.abs(newGazeOffset.y - glanceOffset.y) > 0.05) {
             glanceOffset = newGazeOffset;
