@@ -1019,7 +1019,11 @@ window.dispatchEvent(new Event('mpReady'));
   // Thresholds (tunable via sliders)
   let camYawThreshold   = 12;
   let camMouthThreshold = 0.04;
-  const CAM_SMILE_THRESHOLD = 0.5; // blendshape score 0-1; lower = more sensitive
+  const CAM_SMILE_THRESHOLD = 0.3; // blendshape score 0-1; lower = more sensitive
+
+  // Minimum time (ms) a webcam-detected state must be held before it commits.
+  // Prevents flickering between states on noisy frames.
+  const CAM_DEBOUNCE_MS = 220;
 
   let faceLandmarker = null;
   let camStream      = null;
@@ -1216,6 +1220,27 @@ window.dispatchEvent(new Event('mpReady'));
   const CAM_MAX_TILT = 20;
   const CAM_MAX_LEAN = 12;
 
+  // ---- Debounced state committer ----
+  // Each signal (head direction, mouth, smile) gets its own pending slot.
+  // A state change only commits after it's been the candidate for
+  // CAM_DEBOUNCE_MS continuously — a single off-frame won't flip it back.
+  const camPending = {
+    dir:   { value: null, since: 0 },
+    mouth: { value: false, since: 0 },
+    smile: { value: false, since: 0 }
+  };
+
+  function debounceSet(key, newValue, commitFn) {
+    const slot = camPending[key];
+    const now = performance.now();
+    if (newValue !== slot.value) {
+      slot.value = newValue;
+      slot.since = now;
+    } else if ((now - slot.since) >= CAM_DEBOUNCE_MS) {
+      commitFn(newValue);
+    }
+  }
+
   function camLoop() {
     if (!camRunning) return;
 
@@ -1261,11 +1286,12 @@ window.dispatchEvent(new Event('mpReady'));
         if (smoothYaw > camYawThreshold)       newCamDir = 'left';
         else if (smoothYaw < -camYawThreshold) newCamDir = 'right';
 
-        if (newCamDir !== camDirection) {
-          camDirection = newCamDir;
-          // Only apply if no manual key is held
-          if (manualDirection === null) refreshHeadDirection();
-        }
+        debounceSet('dir', newCamDir, (dir) => {
+          if (dir !== camDirection) {
+            camDirection = dir;
+            if (manualDirection === null) refreshHeadDirection();
+          }
+        });
 
         // ---- Body lean (lateral face position) ----
         // The nose tip x position ranges 0 (left edge) to 1 (right edge).
@@ -1314,10 +1340,28 @@ window.dispatchEvent(new Event('mpReady'));
           }
         }
 
+        // ---- Smile detection (blendshapes) ----
+        // Evaluated BEFORE mouth-open so smile can suppress it — showing
+        // top teeth while smiling reads as mouth-open otherwise.
+        let camSmiling = false;
+        if (camSmileEnabled && results.faceBlendshapes && results.faceBlendshapes.length > 0) {
+          const blendshapes = results.faceBlendshapes[0].categories;
+          const smileL = blendshapes.find(b => b.categoryName === 'mouthSmileLeft');
+          const smileR = blendshapes.find(b => b.categoryName === 'mouthSmileRight');
+          if (smileL && smileR) {
+            const smileScore = (smileL.score + smileR.score) / 2;
+            camSmiling = smileScore > CAM_SMILE_THRESHOLD;
+          }
+        }
+        debounceSet('smile', camSmiling, (smiling) => {
+          if (smiling !== autopilotSmile) {
+            autopilotSmile = smiling;
+            updateHeadLayer();
+          }
+        });
+
         // ---- Mouth open ----
-        // Use the lip landmarks: upper lip top (13) and lower lip bottom (14).
-        // Normalise by inter-eye distance so it's scale-independent.
-        // Only runs when mouth tracking is enabled.
+        // Suppressed while smiling so top-teeth smiles don't trigger talking.
         if (camMouthEnabled) {
           const upperLip  = lm[13];
           const lowerLip  = lm[14];
@@ -1325,33 +1369,15 @@ window.dispatchEvent(new Event('mpReady'));
           const rightEye  = lm[263];
           const eyeDist   = Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y);
           const lipGap    = Math.abs(lowerLip.y - upperLip.y) / (eyeDist || 0.01);
-          const mouthOpen = lipGap > camMouthThreshold;
+          // If currently smiling (pending or committed), don't trigger mouth-open
+          const mouthOpen = !camSmiling && lipGap > camMouthThreshold;
 
-          if (mouthOpen !== camMouthOpen) {
-            camMouthOpen = mouthOpen;
-            updateHeadLayer();
-          }
-        }
-
-        // ---- Smile detection (blendshapes) ----
-        // mouthSmileLeft and mouthSmileRight blendshapes score 0-1.
-        // We average both sides and trigger the smile expression when the
-        // score crosses CAM_SMILE_THRESHOLD. This writes directly to
-        // autopilotSmile so it respects the same priority as the post-talk
-        // smile — manual smile key (1) still wins since updateHeadLayer()
-        // checks manualSmile first.
-        if (camSmileEnabled && results.faceBlendshapes && results.faceBlendshapes.length > 0) {
-          const blendshapes = results.faceBlendshapes[0].categories;
-          const smileL = blendshapes.find(b => b.categoryName === 'mouthSmileLeft');
-          const smileR = blendshapes.find(b => b.categoryName === 'mouthSmileRight');
-          if (smileL && smileR) {
-            const smileScore = (smileL.score + smileR.score) / 2;
-            const smiling = smileScore > CAM_SMILE_THRESHOLD;
-            if (smiling !== autopilotSmile) {
-              autopilotSmile = smiling;
+          debounceSet('mouth', mouthOpen, (open) => {
+            if (open !== camMouthOpen) {
+              camMouthOpen = open;
               updateHeadLayer();
             }
-          }
+          });
         }
 
         // ---- Iris gaze tracking ----
@@ -1389,9 +1415,11 @@ window.dispatchEvent(new Event('mpReady'));
           const rightGazeX = (rightIris.x - (rightOuter.x + rightInner.x) / 2) / rightEyeW;
           const rightGazeY = (rightIris.y - (rightTop.y   + rightBottom.y) / 2) / rightEyeH;
 
-          // Average both eyes; negate X because video is mirrored
+          // Average both eyes; negate X because video is mirrored,
+          // negate Y because MediaPipe Y increases downward but puppet Y
+          // should increase upward (looking up in real life = pupils up on puppet).
           const rawGazeX = -((leftGazeX + rightGazeX) / 2);
-          const rawGazeY =   (leftGazeY + rightGazeY) / 2;
+          const rawGazeY = -((leftGazeY + rightGazeY) / 2);
 
           camGazeXHistory.push(rawGazeX);
           camGazeYHistory.push(rawGazeY);
@@ -1416,7 +1444,11 @@ window.dispatchEvent(new Event('mpReady'));
         }
 
       } else {
-        // No face detected — release webcam direction, mouth, and tilt
+        // No face detected — reset all pending debounce slots and release states
+        camPending.dir.value   = null;
+        camPending.mouth.value = false;
+        camPending.smile.value = false;
+
         if (camDirection !== null) {
           camDirection = null;
           if (manualDirection === null) refreshHeadDirection();
