@@ -245,22 +245,7 @@ window.dispatchEvent(new Event('mpReady'));
 
   /* ---- Webcam preview ---- */
   #camPreview {
-    display: none;
-    width: 100%;
-    aspect-ratio: 4 / 3;
-    border-radius: 6px;
-    overflow: hidden;
-    margin-top: 8px;
-    background: #000;
-    position: relative;
-  }
-
-  #camPreview video {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    transform: scaleX(-1); /* mirror so it feels natural */
-    display: block;
+    margin-top: 6px;
   }
 
   #camStatus {
@@ -389,6 +374,10 @@ window.dispatchEvent(new Event('mpReady'));
             Mouth tracking
           </label>
           <label class="menuRow">
+            <input type="checkbox" id="toggleCamSmile" checked>
+            Smile tracking
+          </label>
+          <label class="menuRow">
             <input type="checkbox" id="toggleCamTilt" checked>
             Head tilt
           </label>
@@ -415,12 +404,11 @@ window.dispatchEvent(new Event('mpReady'));
             <input type="range" id="camMouthThresh" min="1" max="20" value="4">
           </div>
           <div id="camPreview">
-            <video id="camVideo" autoplay playsinline muted></video>
+            <label class="menuRow" style="font-size:11px">
+              <input type="checkbox" id="toggleCamPreview" checked>
+              Show preview
+            </label>
           </div>
-          <label class="menuRow" style="margin-top:6px; font-size:11px">
-            <input type="checkbox" id="toggleCamPreview" checked>
-            Show preview
-          </label>
         </div>
       </div>
 
@@ -438,6 +426,19 @@ window.dispatchEvent(new Event('mpReady'));
         <div class="menuRow"><span id="bgImageName"></span></div>
       </div>
     </div>
+  </div>
+
+  <!-- Webcam video lives outside the settings panel so hiding the panel
+       doesn't pause the video stream. The floating preview below is shown
+       or hidden independently via the "Show preview" checkbox. -->
+  <video id="camVideo" autoplay playsinline muted
+    style="position:fixed; top:-9999px; left:-9999px; width:1px; height:1px; opacity:0;"
+    aria-hidden="true"></video>
+
+  <div id="camFloatPreview" style="display:none; position:fixed; bottom:16px; right:16px;
+    width:160px; aspect-ratio:4/3; border-radius:8px; overflow:hidden;
+    border:1px solid rgba(255,255,255,0.2); box-shadow:0 2px 12px rgba(0,0,0,0.5); z-index:90;">
+    <canvas id="camCanvas" style="width:100%; height:100%; display:block; transform:scaleX(-1);"></canvas>
   </div>
 
 <script>
@@ -1008,15 +1009,17 @@ window.dispatchEvent(new Event('mpReady'));
   // shouldAnimateMouth() can reference them from the start.
 
   let camMouthEnabled = true;
+  let camSmileEnabled = true;  // whether webcam blendshapes drive smile
   let camTiltEnabled  = true;
   let camLeanEnabled  = true;
-  let camEyeEnabled   = true;  // whether webcam drives pupil gaze
+  let camEyeEnabled   = true;
   let camTiltDeg      = 0;
   let camLeanDeg      = 0;
 
   // Thresholds (tunable via sliders)
-  let camYawThreshold   = 12;   // degrees of head yaw before switching direction
-  let camMouthThreshold = 0.04; // lip-distance ratio to trigger mouth open
+  let camYawThreshold   = 12;
+  let camMouthThreshold = 0.04;
+  const CAM_SMILE_THRESHOLD = 0.5; // blendshape score 0-1; lower = more sensitive
 
   let faceLandmarker = null;
   let camStream      = null;
@@ -1025,8 +1028,10 @@ window.dispatchEvent(new Event('mpReady'));
   const camToggle        = document.getElementById('toggleCam');
   const camSettingsDiv   = document.getElementById('camSettings');
   const camStatusEl      = document.getElementById('camStatus');
-  const camPreviewEl     = document.getElementById('camPreview');
   const camVideoEl       = document.getElementById('camVideo');
+  const camFloatPreview  = document.getElementById('camFloatPreview');
+  const camCanvas        = document.getElementById('camCanvas');
+  const camCtx           = camCanvas.getContext('2d');
   const camYawSlider     = document.getElementById('camYawThresh');
   const camYawValEl      = document.getElementById('camYawVal');
   const camMouthSlider   = document.getElementById('camMouthThresh');
@@ -1034,6 +1039,7 @@ window.dispatchEvent(new Event('mpReady'));
   const camMouthSliderWrap = document.getElementById('camMouthSliderWrap');
   const camPreviewToggle = document.getElementById('toggleCamPreview');
   const camMouthToggle   = document.getElementById('toggleCamMouth');
+  const camSmileToggle   = document.getElementById('toggleCamSmile');
   const camTiltToggle    = document.getElementById('toggleCamTilt');
   const camLeanToggle    = document.getElementById('toggleCamLean');
   const camEyeToggle     = document.getElementById('toggleCamEyes');
@@ -1089,7 +1095,17 @@ window.dispatchEvent(new Event('mpReady'));
   });
 
   camPreviewToggle.addEventListener('change', () => {
-    camPreviewEl.style.display = camPreviewToggle.checked ? 'block' : 'none';
+    if (camEnabled) {
+      camFloatPreview.style.display = camPreviewToggle.checked ? 'block' : 'none';
+    }
+  });
+
+  camSmileToggle.addEventListener('change', () => {
+    camSmileEnabled = camSmileToggle.checked;
+    if (!camSmileEnabled && autopilotSmile) {
+      autopilotSmile = false;
+      updateHeadLayer();
+    }
   });
 
   camToggle.addEventListener('change', async () => {
@@ -1144,7 +1160,7 @@ window.dispatchEvent(new Event('mpReady'));
     camEnabled = true;
     camRunning = true;
     camStatusEl.textContent = 'Tracking active';
-    camPreviewEl.style.display = camPreviewToggle.checked ? 'block' : 'none';
+    if (camPreviewToggle.checked) camFloatPreview.style.display = 'block';
     requestAnimationFrame(camLoop);
   }
 
@@ -1169,9 +1185,13 @@ window.dispatchEvent(new Event('mpReady'));
       glanceOffset = { x: 0, y: 0 };
       updateEyeTransform();
     }
+    if (autopilotSmile) {
+      autopilotSmile = false;
+      updateHeadLayer();
+    }
     camStatusEl.textContent = '';
     camSettingsDiv.style.display = 'none';
-    camPreviewEl.style.display = 'none';
+    camFloatPreview.style.display = 'none';
 
     if (camStream) {
       camStream.getTracks().forEach(t => t.stop());
@@ -1202,6 +1222,13 @@ window.dispatchEvent(new Event('mpReady'));
     if (camVideoEl.readyState >= 2) {
       const now = performance.now();
       const results = faceLandmarker.detectForVideo(camVideoEl, now);
+
+      // Draw mirrored video to the canvas preview (only costs anything when visible)
+      if (camPreviewToggle.checked) {
+        camCanvas.width  = camVideoEl.videoWidth  || 320;
+        camCanvas.height = camVideoEl.videoHeight || 240;
+        camCtx.drawImage(camVideoEl, 0, 0, camCanvas.width, camCanvas.height);
+      }
 
       if (results.faceLandmarks && results.faceLandmarks.length > 0) {
         const lm = results.faceLandmarks[0];
@@ -1306,6 +1333,27 @@ window.dispatchEvent(new Event('mpReady'));
           }
         }
 
+        // ---- Smile detection (blendshapes) ----
+        // mouthSmileLeft and mouthSmileRight blendshapes score 0-1.
+        // We average both sides and trigger the smile expression when the
+        // score crosses CAM_SMILE_THRESHOLD. This writes directly to
+        // autopilotSmile so it respects the same priority as the post-talk
+        // smile — manual smile key (1) still wins since updateHeadLayer()
+        // checks manualSmile first.
+        if (camSmileEnabled && results.faceBlendshapes && results.faceBlendshapes.length > 0) {
+          const blendshapes = results.faceBlendshapes[0].categories;
+          const smileL = blendshapes.find(b => b.categoryName === 'mouthSmileLeft');
+          const smileR = blendshapes.find(b => b.categoryName === 'mouthSmileRight');
+          if (smileL && smileR) {
+            const smileScore = (smileL.score + smileR.score) / 2;
+            const smiling = smileScore > CAM_SMILE_THRESHOLD;
+            if (smiling !== autopilotSmile) {
+              autopilotSmile = smiling;
+              updateHeadLayer();
+            }
+          }
+        }
+
         // ---- Iris gaze tracking ----
         // MediaPipe provides iris landmarks: 468-472 for left iris,
         // 473-477 for right iris (center of iris = 468 and 473).
@@ -1392,6 +1440,10 @@ window.dispatchEvent(new Event('mpReady'));
             glanceOffset = { x: 0, y: 0 };
             updateEyeTransform();
           }
+        }
+        if (camSmileEnabled && autopilotSmile) {
+          autopilotSmile = false;
+          updateHeadLayer();
         }
       }
     }
