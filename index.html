@@ -410,8 +410,20 @@ window.dispatchEvent(new Event('mpReady'));
             </label>
             <input type="range" id="camOFaceThresh" min="10" max="80" value="40">
           </div>
-          <div class="menuRow" style="margin-top:8px; flex-direction:column; align-items:flex-start; gap:4px;">
-            <button id="camCalibrateBtn">Calibrate eye center</button>
+          <div class="camSliderRow">
+            <label>
+              <span>Smile threshold</span>
+              <span id="camSmileVal">0.30</span>
+            </label>
+            <input type="range" id="camSmileThresh" min="5" max="80" value="30">
+          </div>
+          <div class="menuRow" style="margin-top:8px; flex-direction:column; align-items:flex-start; gap:6px;">
+            <span style="font-size:11px; opacity:0.7;">Eye calibration — look at the camera in each position:</span>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button id="camCalibBtnLeft">← Left</button>
+              <button id="camCalibBtnFront">Front</button>
+              <button id="camCalibBtnRight">Right →</button>
+            </div>
             <span id="camCalibrateStatus" style="font-size:11px; opacity:0.6;"></span>
           </div>
           <div id="camPreview">
@@ -1041,8 +1053,8 @@ window.dispatchEvent(new Event('mpReady'));
   // Thresholds (tunable via sliders)
   let camYawThreshold   = 12;
   let camMouthThreshold = 0.04;
-  let camOFaceThreshold = 0.40; // jawOpen blendshape score to trigger O-face
-  const CAM_SMILE_THRESHOLD = 0.3;
+  let camOFaceThreshold = 0.40;
+  let camSmileThreshold = 0.30;
 
   // Minimum time (ms) a webcam-detected state must be held before it commits.
   // Prevents flickering between states on noisy frames.
@@ -1129,32 +1141,51 @@ window.dispatchEvent(new Event('mpReady'));
     camOFaceValEl.textContent = camOFaceThreshold.toFixed(2);
   });
 
-  const camCalibrateBtn    = document.getElementById('camCalibrateBtn');
+  const camSmileSlider = document.getElementById('camSmileThresh');
+  const camSmileValEl  = document.getElementById('camSmileVal');
+
+  camSmileSlider.addEventListener('input', () => {
+    camSmileThreshold = Number(camSmileSlider.value) / 100;
+    camSmileValEl.textContent = camSmileThreshold.toFixed(2);
+  });
+
   const camCalibrateStatus = document.getElementById('camCalibrateStatus');
 
-  // While > 0, camLoop accumulates raw gaze samples for calibration
-  let camCalibFramesLeft = 0;
-  let camCalibSumX = 0;
-  let camCalibSumY = 0;
-  let camCalibCount = 0;
-  const CAM_CALIB_FRAMES = 30; // ~1 second of frames at 30fps
+  // Per-direction calibration offsets. Keyed by puppet head direction.
+  // front Y is used for all directions since Y drift is consistent.
+  // Pre-seeded with your measured values as reasonable starting defaults
+  // that should get updated via the calibration buttons.
+  let camGazeCalibByDir = {
+    front: { x: -0.37, y:  0.05 },
+    left:  { x:  1.25, y: -0.30 },
+    right: { x: -1.93, y: -0.28 }
+  };
 
-  camCalibrateBtn.addEventListener('click', () => {
+  // Active calibration pass state
+  let camCalibTarget     = null;  // 'front' | 'left' | 'right'
+  let camCalibFramesLeft = 0;
+  let camCalibSumX       = 0;
+  let camCalibSumY       = 0;
+  let camCalibCount      = 0;
+  const CAM_CALIB_FRAMES = 60; // ~2 seconds at 30fps for more stable average
+
+  function startCalib(dir) {
     if (!camEnabled) {
       camCalibrateStatus.textContent = 'Enable webcam tracking first.';
       return;
     }
-    camCalibrateStatus.textContent = 'Look directly at the camera…';
+    camCalibTarget = dir;
     camCalibSumX = 0;
     camCalibSumY = 0;
     camCalibCount = 0;
     camCalibFramesLeft = CAM_CALIB_FRAMES;
-  });
+    const label = dir === 'front' ? 'front' : (dir === 'left' ? 'your left (puppet right)' : 'your right (puppet left)');
+    camCalibrateStatus.textContent = `Look at the camera facing ${label}…`;
+  }
 
-  // Gaze calibration offsets — set by the "Calibrate eye center" button.
-  // These are subtracted from raw gaze before clamping so neutral gaze = center.
-  let camGazeCalibX = 0;
-  let camGazeCalibY = 0;
+  document.getElementById('camCalibBtnFront').addEventListener('click', () => startCalib('front'));
+  document.getElementById('camCalibBtnLeft').addEventListener('click',  () => startCalib('left'));
+  document.getElementById('camCalibBtnRight').addEventListener('click', () => startCalib('right'));
 
   camPreviewToggle.addEventListener('change', () => {
     if (camEnabled) {
@@ -1244,6 +1275,7 @@ window.dispatchEvent(new Event('mpReady'));
     camLeanDeg = 0;
     camBlinking = false;
     camCalibFramesLeft = 0;
+    camCalibTarget = null;
     camGazeXHistory = [];
     camGazeYHistory = [];
     applyHeadTilt(0);
@@ -1416,7 +1448,7 @@ window.dispatchEvent(new Event('mpReady'));
           const smileR = blendshapes.find(b => b.categoryName === 'mouthSmileRight');
           if (smileL && smileR) {
             const smileScore = (smileL.score + smileR.score) / 2;
-            camSmiling = smileScore > CAM_SMILE_THRESHOLD;
+            camSmiling = smileScore > camSmileThreshold;
           }
         }
         debounceSet('smile', camSmiling, (smiling) => {
@@ -1563,17 +1595,31 @@ window.dispatchEvent(new Event('mpReady'));
               camCalibSumY += gazeY;
               camCalibCount++;
               camCalibFramesLeft--;
-              if (camCalibFramesLeft === 0) {
-                camGazeCalibX = camCalibSumX / camCalibCount;
-                camGazeCalibY = camCalibSumY / camCalibCount;
+              if (camCalibFramesLeft === 0 && camCalibTarget) {
+                const avgX = camCalibSumX / camCalibCount;
+                const avgY = camCalibSumY / camCalibCount;
+                camGazeCalibByDir[camCalibTarget].x = avgX;
+                // Y: use the measured Y but blend toward front Y for turned positions
+                // since head-turn Y drift is usually minor and consistent
+                if (camCalibTarget !== 'front') {
+                  camGazeCalibByDir[camCalibTarget].y =
+                    (avgY + camGazeCalibByDir.front.y) / 2;
+                } else {
+                  camGazeCalibByDir[camCalibTarget].y = avgY;
+                }
                 camCalibrateStatus.textContent =
-                  `Calibrated (offset ${camGazeCalibX.toFixed(2)}, ${camGazeCalibY.toFixed(2)})`;
+                  `${camCalibTarget} calibrated (${avgX.toFixed(2)}, ${avgY.toFixed(2)})`;
+                camCalibTarget = null;
               }
             }
 
-            // Subtract calibration offset so neutral gaze = center
-            gazeX -= camGazeCalibX;
-            gazeY -= camGazeCalibY;
+            // Apply the calibration offset for the current head direction.
+            // For directions not yet individually calibrated this falls back
+            // to front, which is always set.
+            const calibDir = camGazeCalibByDir[currentDirection] || camGazeCalibByDir.front;
+            gazeX -= calibDir.x;
+            // Y uses front calibration for all directions since Y drift is consistent
+            gazeY -= camGazeCalibByDir.front.y;
 
             // Clamp to the same range arrow keys use so irises stay in socket
             const D = EYE_GLANCE_DISTANCE;
