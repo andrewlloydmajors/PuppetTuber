@@ -403,6 +403,17 @@ window.dispatchEvent(new Event('mpReady'));
             </label>
             <input type="range" id="camMouthThresh" min="1" max="20" value="4">
           </div>
+          <div class="camSliderRow">
+            <label>
+              <span>O-face threshold</span>
+              <span id="camOFaceVal">0.40</span>
+            </label>
+            <input type="range" id="camOFaceThresh" min="10" max="80" value="40">
+          </div>
+          <div class="menuRow" style="margin-top:8px; flex-direction:column; align-items:flex-start; gap:4px;">
+            <button id="camCalibrateBtn">Calibrate eye center</button>
+            <span id="camCalibrateStatus" style="font-size:11px; opacity:0.6;"></span>
+          </div>
           <div id="camPreview">
             <label class="menuRow" style="font-size:11px">
               <input type="checkbox" id="toggleCamPreview" checked>
@@ -1030,7 +1041,8 @@ window.dispatchEvent(new Event('mpReady'));
   // Thresholds (tunable via sliders)
   let camYawThreshold   = 12;
   let camMouthThreshold = 0.04;
-  const CAM_SMILE_THRESHOLD = 0.3; // blendshape score 0-1; lower = more sensitive
+  let camOFaceThreshold = 0.40; // jawOpen blendshape score to trigger O-face
+  const CAM_SMILE_THRESHOLD = 0.3;
 
   // Minimum time (ms) a webcam-detected state must be held before it commits.
   // Prevents flickering between states on noisy frames.
@@ -1108,6 +1120,41 @@ window.dispatchEvent(new Event('mpReady'));
     camMouthThreshold = Number(camMouthSlider.value) / 100;
     camMouthValEl.textContent = camMouthThreshold.toFixed(2);
   });
+
+  const camOFaceSlider  = document.getElementById('camOFaceThresh');
+  const camOFaceValEl   = document.getElementById('camOFaceVal');
+
+  camOFaceSlider.addEventListener('input', () => {
+    camOFaceThreshold = Number(camOFaceSlider.value) / 100;
+    camOFaceValEl.textContent = camOFaceThreshold.toFixed(2);
+  });
+
+  const camCalibrateBtn    = document.getElementById('camCalibrateBtn');
+  const camCalibrateStatus = document.getElementById('camCalibrateStatus');
+
+  // While > 0, camLoop accumulates raw gaze samples for calibration
+  let camCalibFramesLeft = 0;
+  let camCalibSumX = 0;
+  let camCalibSumY = 0;
+  let camCalibCount = 0;
+  const CAM_CALIB_FRAMES = 30; // ~1 second of frames at 30fps
+
+  camCalibrateBtn.addEventListener('click', () => {
+    if (!camEnabled) {
+      camCalibrateStatus.textContent = 'Enable webcam tracking first.';
+      return;
+    }
+    camCalibrateStatus.textContent = 'Look directly at the camera…';
+    camCalibSumX = 0;
+    camCalibSumY = 0;
+    camCalibCount = 0;
+    camCalibFramesLeft = CAM_CALIB_FRAMES;
+  });
+
+  // Gaze calibration offsets — set by the "Calibrate eye center" button.
+  // These are subtracted from raw gaze before clamping so neutral gaze = center.
+  let camGazeCalibX = 0;
+  let camGazeCalibY = 0;
 
   camPreviewToggle.addEventListener('change', () => {
     if (camEnabled) {
@@ -1196,6 +1243,7 @@ window.dispatchEvent(new Event('mpReady'));
     camTiltDeg = 0;
     camLeanDeg = 0;
     camBlinking = false;
+    camCalibFramesLeft = 0;
     camGazeXHistory = [];
     camGazeYHistory = [];
     applyHeadTilt(0);
@@ -1398,7 +1446,7 @@ window.dispatchEvent(new Event('mpReady'));
             const jaw = bs.find(b => b.categoryName === 'jawOpen');
             if (jaw) jawOpen = jaw.score;
           }
-          const mouthWide = !camSmiling && jawOpen > 0.6;
+          const mouthWide = !camSmiling && jawOpen > camOFaceThreshold;
 
           debounceSet('mouth', mouthOpen, (open) => {
             if (open !== camMouthOpen) {
@@ -1506,7 +1554,31 @@ window.dispatchEvent(new Event('mpReady'));
             // Scale into the glance offset range. Blendshape scores are 0-1 per
             // direction, so net range is roughly -1 to +1 after differencing.
             gazeX = -smoothX * EYE_GLANCE_DISTANCE * 3; // negate for mirror
-            gazeY =  smoothY * EYE_GLANCE_DISTANCE * 3; // positive = down = correct
+            gazeY =  smoothY * EYE_GLANCE_DISTANCE * 3;
+
+            // If a calibration pass is in progress, accumulate raw values
+            // before applying any offset (we're measuring the raw drift)
+            if (camCalibFramesLeft > 0) {
+              camCalibSumX += gazeX;
+              camCalibSumY += gazeY;
+              camCalibCount++;
+              camCalibFramesLeft--;
+              if (camCalibFramesLeft === 0) {
+                camGazeCalibX = camCalibSumX / camCalibCount;
+                camGazeCalibY = camCalibSumY / camCalibCount;
+                camCalibrateStatus.textContent =
+                  `Calibrated (offset ${camGazeCalibX.toFixed(2)}, ${camGazeCalibY.toFixed(2)})`;
+              }
+            }
+
+            // Subtract calibration offset so neutral gaze = center
+            gazeX -= camGazeCalibX;
+            gazeY -= camGazeCalibY;
+
+            // Clamp to the same range arrow keys use so irises stay in socket
+            const D = EYE_GLANCE_DISTANCE;
+            gazeX = Math.max(-D, Math.min(D, gazeX));
+            gazeY = Math.max(-D, Math.min(D, gazeY));
           }
 
           const newGazeOffset = { x: gazeX, y: gazeY };
